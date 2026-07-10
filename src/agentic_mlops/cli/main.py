@@ -101,6 +101,57 @@ def validate_dataset(
         raise typer.Exit(code=1)
 
 
+@app.command("data-intake")
+def data_intake(
+    raw_data_path: str = typer.Argument(..., help="Path to the raw image directory"),
+    dataset_name: str = typer.Option(..., "--dataset-name", help="Name for this raw dataset"),
+    source: str = typer.Option(
+        None,
+        "--source",
+        help="Data provenance/source (e.g. 'internal_camera_batch') — omitting it forces "
+        "needs_human_source_approval",
+    ),
+    output_dir: str = typer.Option(
+        None,
+        "--output-dir",
+        help="Where to save the manifest (default: <raw_data_path>/intake_out)",
+    ),
+    expected_formats: str = typer.Option(
+        "jpg,jpeg,png", "--expected-formats", help="Comma-separated list of accepted extensions"
+    ),
+    min_files: int = typer.Option(1, "--min-files", help="Minimum file count required to pass"),
+    corrupted_ratio_threshold: float = typer.Option(
+        0.05, "--corrupted-ratio-threshold", help="Corrupted-file ratio that fails intake"
+    ),
+    duplicate_ratio_threshold: float = typer.Option(
+        0.20, "--duplicate-ratio-threshold", help="Duplicate-file ratio that requires human review"
+    ),
+) -> None:
+    """Scan a raw image directory and write a dataset_manifest."""
+    from agentic_mlops.agents.data_intake import DataIntakeAgent  # noqa: PLC0415
+    from agentic_mlops.contracts.data_intake import DataIntakeInput  # noqa: PLC0415
+
+    artifacts_dir = Path(output_dir) if output_dir else Path(raw_data_path) / "intake_out"
+
+    agent = DataIntakeAgent(artifacts_dir=artifacts_dir)
+    result = agent.run(
+        DataIntakeInput(
+            raw_data_path=raw_data_path,
+            dataset_name=dataset_name,
+            source=source,
+            expected_formats=[f.strip() for f in expected_formats.split(",") if f.strip()],
+            min_files=min_files,
+            corrupted_ratio_threshold=corrupted_ratio_threshold,
+            duplicate_ratio_threshold=duplicate_ratio_threshold,
+        )
+    )
+
+    _print_data_intake_result(result)
+
+    if not result.success:
+        raise typer.Exit(code=1)
+
+
 @app.command("label-qa")
 def label_qa(
     dataset_path: str = typer.Argument(..., help="Path to the YOLO dataset root directory"),
@@ -146,6 +197,41 @@ def label_qa(
 
 
 # ── Pretty-print helpers ───────────────────────────────────────────────────────
+
+
+def _print_data_intake_result(result) -> None:  # type: ignore[type-arg]
+    status_color = {
+        "passed": "green",
+        "needs_human_source_approval": "yellow",
+        "failed": "red",
+    }.get(str(result.status), "white")
+
+    console.print(
+        f"\n[bold {status_color}]Data Intake: {str(result.status).upper()}[/bold {status_color}]"
+    )
+    console.print(
+        f"Files: {result.num_files}  |  Valid images: {result.valid_images}  |  "
+        f"Corrupted: {len(result.corrupted_images)}  |  "
+        f"Duplicate groups: {len(result.duplicate_groups)}"
+    )
+    if not result.pillow_available:
+        console.print(
+            "[yellow]Pillow not installed — corruption checks are best-effort only "
+            "(pip install -e '.[vision]')[/yellow]"
+        )
+
+    if result.warnings:
+        console.print("\n[bold yellow]Needs Review[/bold yellow]")
+        for w in result.warnings:
+            console.print(f"  [yellow]WARN[/yellow] {w}")
+
+    if result.errors:
+        console.print("\n[bold red]Errors[/bold red]")
+        for err in result.errors:
+            console.print(f"  [red]FAIL[/red] {err}")
+
+    if result.manifest_path:
+        console.print(f"\nManifest saved to: [bold]{result.manifest_path}[/bold]")
 
 
 def _print_validation_result(result) -> None:  # type: ignore[type-arg]

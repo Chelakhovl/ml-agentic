@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from agentic_mlops.contracts.approvals import ApprovalOutput
+from agentic_mlops.contracts.data_intake import DataIntakeOutput
 from agentic_mlops.contracts.datasets import DatasetValidationOutput
 from agentic_mlops.contracts.evaluation import EvaluationOutput
 from agentic_mlops.contracts.label_qa import LabelQAOutput
@@ -137,6 +138,39 @@ class ReportWriter:
         return json_path, md_path
 
 
+    def write_data_intake_report(
+        self,
+        output: DataIntakeOutput,
+        artifacts_dir: Path,
+    ) -> tuple[Path, Path]:
+        """Write dataset_manifest.json and .md. Returns (json_path, md_path)."""
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        json_path = artifacts_dir / "dataset_manifest.json"
+        md_path = artifacts_dir / "dataset_manifest.md"
+
+        payload: dict[str, Any] = {
+            "generated_at": datetime.now(tz=UTC).isoformat(),
+            "status": output.status,
+            "dataset_name": output.dataset_name,
+            "source": output.source,
+            "num_files": output.num_files,
+            "valid_images": output.valid_images,
+            "corrupted_images": output.corrupted_images,
+            "duplicate_groups": output.duplicate_groups,
+            "unexpected_format_files": output.unexpected_format_files,
+            "pillow_available": output.pillow_available,
+            "images": [r.model_dump() for r in output.image_records],
+            "message": output.message,
+        }
+
+        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        md_path.write_text(_data_intake_report_md(payload), encoding="utf-8")
+
+        logger.info(
+            "Data intake manifest written", extra={"json": str(json_path), "md": str(md_path)}
+        )
+        return json_path, md_path
+
     def write_label_qa_report(
         self,
         output: LabelQAOutput,
@@ -243,6 +277,58 @@ def _dataset_report_md(report: dict[str, Any]) -> str:
         lines.append("")
 
     lines += [f"**Recommendation:** `{report['recommendation']}`", ""]
+    return "\n".join(lines)
+
+
+def _data_intake_report_md(report: dict[str, Any]) -> str:
+    dupes = report["duplicate_groups"]
+    corrupted = report["corrupted_images"]
+    unexpected = report["unexpected_format_files"]
+    lines = [
+        "# Dataset Manifest",
+        "",
+        f"**Status:** `{report['status'].upper()}`  ",
+        f"**Generated:** {report['generated_at']}  ",
+        f"**Dataset name:** {report['dataset_name'] or 'N/A'}  ",
+        f"**Source:** {report['source'] or 'N/A (needs human confirmation)'}  ",
+        "**Pillow available:** "
+        + ("yes" if report["pillow_available"] else "no (best-effort checks only)"),
+        "",
+        "## Summary",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Files scanned | {report['num_files']} |",
+        f"| Valid images | {report['valid_images']} |",
+        f"| Corrupted images | {len(corrupted)} |",
+        f"| Duplicate groups | {len(dupes)} |",
+        f"| Unexpected format files | {len(unexpected)} |",
+        "",
+    ]
+
+    if corrupted:
+        lines += ["## Corrupted Images", ""]
+        for c in corrupted[:200]:
+            lines.append(f"- {c}")
+        if len(corrupted) > 200:
+            lines.append(f"- ... {len(corrupted) - 200} more not shown")
+        lines.append("")
+
+    if dupes:
+        lines += ["## Duplicate Groups", ""]
+        for group in dupes[:200]:
+            lines.append(f"- {', '.join(group)}")
+        if len(dupes) > 200:
+            lines.append(f"- ... {len(dupes) - 200} more not shown")
+        lines.append("")
+
+    if unexpected:
+        lines += ["## Unexpected Format Files", ""]
+        for u in unexpected[:200]:
+            lines.append(f"- {u}")
+        lines.append("")
+
+    lines.append(f"**Message:** {report['message']}")
     return "\n".join(lines)
 
 

@@ -31,6 +31,9 @@ azure = [
     "azure-ai-ml>=1.12",
     "azure-identity>=1.15",
 ]
+vision = [
+    "Pillow>=10.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

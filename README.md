@@ -68,16 +68,16 @@ pytest tests/unit -v
 
 ```
 src/agentic_mlops/
-  agents/           ← orchestration layer (5 MVP agents)
+  agents/           ← orchestration layer (5 MVP agents + data-intake, label-qa)
   contracts/        ← Pydantic I/O models
-  tools/            ← dataset validator, YOLO trainer/evaluator, report writer
+  tools/            ← dataset validator, YOLO trainer/evaluator, data intake scanner, label QA checker, report writer
   integrations/     ← Azure ML client, MLflow tracking, model registry backends
   azure_jobs/       ← entry scripts submitted to Azure ML (train_yolo.py, eval_yolo.py)
   workflows/        ← MVPWorkflow, promotion policy
   observability/    ← structured logging
   cli/              ← Typer CLI
 tests/
-  unit/             ← 275 tests across all agents, tools, and integrations
+  unit/             ← 292 tests across all agents, tools, and integrations
   conftest.py       ← shared fixtures
 configs/
   training.example.yaml
@@ -91,6 +91,7 @@ configs/
 
 | Command | Description |
 |---|---|
+| `data-intake` | Scan a raw image directory and write a dataset manifest (format/corruption/duplicate checks) — standalone, not part of `run-mvp` |
 | `validate-dataset` | Validate a YOLO dataset locally — no Azure needed |
 | `label-qa` | Check label quality (suspicious bbox geometry, class imbalance, optional reference-model disagreement) — standalone, not part of `run-mvp` |
 | `train` | Train a YOLO model: `fake` (dry-run plan) \| `local-yolo` (Ultralytics) \| `azure-ml` (Azure ML SDK v2) |
