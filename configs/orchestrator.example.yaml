@@ -15,6 +15,7 @@ steps:
   # - data_intake
   # - dataset_structuring
   # - dataset_versioning
+  # - training_approval   # H4 gate — sits between dataset_versioning and training
   # - model_decision
   # - deployment
 
@@ -33,6 +34,11 @@ fail_on_warnings: false
 # classes: [scratch, dent, crack]
 # label_format: yolo   # yolo | coco
 # split_strategy: random   # random | grouped_by_source
+
+# ── training_approval (H4 gate, optional) ───────────────────────────────────
+# interactive_training_approval: true
+# training_approval_action: approve_training   # required when interactive_training_approval: false
+# training_approver: jane.doe
 
 # ── training ─────────────────────────────────────────────────────────────
 training_config_path: configs/training.yaml

@@ -26,6 +26,11 @@ Coverage matrix:
    22.  CLI: run-workflow succeeds and pauses at approval (exit 0)
    23.  CLI: run-workflow exits 1 on a bad config path
    24.  CLI: run-workflow exits 1 when re-run without --resume
+   25.  H4 gate: pauses at TRAINING_APPROVAL_REQUIRED when non-interactive with no action
+   26.  H4 gate: approve_training proceeds through the rest of the chain normally
+   27.  H4 gate: reject_training cascades SKIPPED through training/evaluation/approval
+   28.  H4 gate: training_approval requires dataset_validation to have run first
+   29.  _is_legal recognizes the TRAINING_APPROVAL_REQUIRED pause/resume transitions
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from agentic_mlops.contracts.orchestrator import (
     OrchestratorInput,
     OrchestratorStatus,
 )
+from agentic_mlops.contracts.training_approval import TrainingApprovalAction
 from agentic_mlops.integrations.workflow_state_store import WorkflowStateStore
 from agentic_mlops.workflows.orchestrator import OrchestratorWorkflow
 from tests.conftest import make_valid_dataset
@@ -448,3 +454,74 @@ def test_cli_run_workflow_exits_1_without_resume_on_rerun(tmp_path: Path) -> Non
 
     second = runner.invoke(app, args)
     assert second.exit_code == 1
+
+
+# ── 25-29. H4 Training Approval gate ────────────────────────────────────────────
+
+
+def test_h4_pauses_when_no_action_given(tmp_path: Path) -> None:
+    inp = _base_input(
+        tmp_path,
+        steps=["dataset_validation", "training_approval", "training"],
+        interactive_training_approval=False,
+    )
+    result = OrchestratorWorkflow().run(inp)
+    assert result.status == OrchestratorStatus.PENDING_APPROVAL
+    assert result.current_state == "TRAINING_APPROVAL_REQUIRED"
+    assert result.pending_approval_id == "appr_train_wf_test"
+    assert [s.step for s in result.steps] == ["dataset_validation", "training_approval"]
+
+
+def test_h4_approve_training_proceeds_normally(tmp_path: Path) -> None:
+    inp = _base_input(
+        tmp_path,
+        steps=["dataset_validation", "training_approval", "training", "evaluation", "approval"],
+        interactive_training_approval=False,
+        training_approval_action=TrainingApprovalAction.APPROVE_TRAINING,
+        approval_action=ApprovalAction.APPROVE_MODEL,
+        force_approve=True,
+    )
+    result = OrchestratorWorkflow().run(inp)
+    assert result.status == OrchestratorStatus.COMPLETED
+    statuses = {s.step: s.status for s in result.steps}
+    assert statuses["training_approval"] == "APPROVED"
+    assert statuses["training"] == "COMPLETED"
+    assert statuses["evaluation"] == "COMPLETED"
+
+
+def test_h4_reject_training_cascades_skipped(tmp_path: Path) -> None:
+    inp = _base_input(
+        tmp_path,
+        steps=["dataset_validation", "training_approval", "training", "evaluation", "approval"],
+        interactive_training_approval=False,
+        training_approval_action=TrainingApprovalAction.REJECT_TRAINING,
+    )
+    result = OrchestratorWorkflow().run(inp)
+    assert result.status == OrchestratorStatus.COMPLETED
+    statuses = {s.step: s.status for s in result.steps}
+    assert statuses["training_approval"] == "REJECTED"
+    assert statuses["training"] == "SKIPPED"
+    assert statuses["evaluation"] == "SKIPPED"
+    assert statuses["approval"] == "SKIPPED"
+
+
+def test_h4_requires_dataset_validation_first(tmp_path: Path) -> None:
+    inp = _base_input(tmp_path, steps=["training_approval"])
+    result = OrchestratorWorkflow().run(inp)
+    assert result.status == OrchestratorStatus.FAILED
+    assert "dataset_validation" in result.errors[0]
+
+
+def test_is_legal_recognizes_training_approval_pause() -> None:
+    wf = OrchestratorWorkflow()
+    steps = ["dataset_validation", "training_approval", "training"]
+    assert wf._is_legal(
+        "TRAINING_APPROVAL_RUNNING", "TRAINING_APPROVAL_REQUIRED", steps
+    ) is True
+    assert wf._is_legal(
+        "TRAINING_APPROVAL_REQUIRED", "TRAINING_APPROVAL_RUNNING", steps
+    ) is True
+    assert wf._is_legal(
+        "TRAINING_APPROVAL_RUNNING", "TRAINING_APPROVAL_COMPLETED", steps
+    ) is True
+    assert wf._is_legal("TRAINING_APPROVAL_REQUIRED", "TRAINING_RUNNING", steps) is False

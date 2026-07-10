@@ -20,6 +20,7 @@ from agentic_mlops.contracts.model_decision import ModelDecisionOutput
 from agentic_mlops.contracts.monitoring import MonitoringOutput
 from agentic_mlops.contracts.orchestrator import OrchestratorOutput
 from agentic_mlops.contracts.training import TrainingOutput, training_mode_to_runner
+from agentic_mlops.contracts.training_approval import TrainingApprovalOutput
 from agentic_mlops.contracts.workflows import MVPWorkflowOutput
 from agentic_mlops.observability.logging import get_logger
 
@@ -144,6 +145,34 @@ class ReportWriter:
         )
         return json_path, md_path
 
+
+    def write_training_approval_decision(
+        self,
+        output: TrainingApprovalOutput,
+        artifacts_dir: Path,
+    ) -> tuple[Path, Path]:
+        """Write training_approval_decision.json and .md. Returns (json_path, md_path)."""
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        json_path = artifacts_dir / "training_approval_decision.json"
+        md_path = artifacts_dir / "training_approval_decision.md"
+
+        payload: dict[str, Any] = {
+            "status": output.status,
+            "action": output.action,
+            "approver": output.approver,
+            "timestamp": output.timestamp,
+            "dataset_report_path": output.dataset_report_path,
+            "comment": output.comment,
+            "message": output.message,
+        }
+
+        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        md_path.write_text(_training_approval_decision_md(output), encoding="utf-8")
+        logger.info(
+            "Training approval decision written",
+            extra={"json": str(json_path), "md": str(md_path)},
+        )
+        return json_path, md_path
 
     def write_data_intake_report(
         self,
@@ -1081,6 +1110,25 @@ def _evaluation_report_md(report: dict[str, Any], output: EvaluationOutput) -> s
             lines.append(f"- `{a}`")
         lines.append("")
 
+    lines.append(f"**Message:** {output.message}")
+    return "\n".join(lines)
+
+
+def _training_approval_decision_md(output: TrainingApprovalOutput) -> str:
+    status_label = (output.status or "N/A").upper()
+    lines = [
+        "# Training Approval Decision (H4)",
+        "",
+        f"**Status:** `{status_label}`  ",
+        f"**Action:** `{output.action or 'N/A'}`  ",
+        f"**Approver:** {output.approver or 'N/A'}  ",
+        f"**Timestamp:** {output.timestamp}",
+        "",
+        f"**Dataset report:** `{output.dataset_report_path}`",
+        "",
+    ]
+    if output.comment:
+        lines += ["## Human Comment", "", output.comment, ""]
     lines.append(f"**Message:** {output.message}")
     return "\n".join(lines)
 

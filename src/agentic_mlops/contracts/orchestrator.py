@@ -22,6 +22,7 @@ from .common import ToolResult
 from .dataset_structuring import LabelFormat, SplitStrategy
 from .deployment import DeploymentTarget, ExportFormat
 from .model_registry import RegistryBackend
+from .training_approval import TrainingApprovalAction
 
 # Canonical pipeline order. Every value in OrchestratorInput.steps must be one
 # of these, and (if several are given) must appear in this relative order —
@@ -35,6 +36,7 @@ PIPELINE_STEPS: tuple[str, ...] = (
     "dataset_structuring",
     "dataset_validation",
     "dataset_versioning",
+    "training_approval",
     "training",
     "evaluation",
     "model_decision",
@@ -104,6 +106,12 @@ class OrchestratorInput(BaseModel):
     parent_version: int | None = None
     approved_by: str | None = None
     source_batches: list[str] = Field(default_factory=list)
+
+    # ── training_approval (H4 gate) ──────────────────────────────────────────
+    training_approver: str | None = None
+    training_approval_action: TrainingApprovalAction | None = None
+    interactive_training_approval: bool = True
+    force_training_approval: bool = False
 
     # ── training ─────────────────────────────────────────────────────────────
     training_config_path: str | None = None

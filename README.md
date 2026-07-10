@@ -68,7 +68,7 @@ pytest tests/unit -v
 
 ```
 src/agentic_mlops/
-  agents/           ← orchestration layer (5 MVP agents + data-intake, structure-dataset, pseudo-label, label-qa, dataset-versioning, model-decision, deployment, monitoring)
+  agents/           ← orchestration layer (5 MVP agents + data-intake, structure-dataset, pseudo-label, label-qa, dataset-versioning, model-decision, deployment, monitoring, training-approval)
   contracts/        ← Pydantic I/O models
   tools/            ← dataset validator/structurer, YOLO trainer/evaluator, data intake scanner, pseudo-labeler, label QA checker, model decider, deployer, monitor, report writer
   integrations/     ← Azure ML client, MLflow tracking, model + dataset registry backends, workflow state store
@@ -77,7 +77,7 @@ src/agentic_mlops/
   observability/    ← structured logging
   cli/              ← Typer CLI
 tests/
-  unit/             ← 443 tests across all agents, tools, and integrations
+  unit/             ← 461 tests across all agents, tools, and integrations
   conftest.py       ← shared fixtures
 configs/
   training.example.yaml
@@ -100,6 +100,7 @@ configs/
 | `model-decision` | Turn an evaluation report into an explainable promote/reject/retrain/need-more-data/need-label-review decision — standalone, not part of `run-mvp` |
 | `deploy-model` | Export (ONNX/pt) + smoke-test + deploy a registered model to a local staging/production release — standalone, not part of `run-mvp` |
 | `monitor` | Analyze a predictions log for latency/error/confidence/drift issues and recommend an action — standalone, not part of `run-mvp` |
+| `approve-training` | H4 gate: review a dataset validation report and approve/reject starting training — standalone, not part of `run-mvp` |
 | `train` | Train a YOLO model: `fake` (dry-run plan) \| `local-yolo` (Ultralytics) \| `azure-ml` (Azure ML SDK v2) |
 | `evaluate` | Evaluate a model and apply the promotion policy: `fake` \| `local-yolo` \| `azure-ml` |
 | `approve` | Record a human approval decision (interactive or `--no-interactive --action ...`) |

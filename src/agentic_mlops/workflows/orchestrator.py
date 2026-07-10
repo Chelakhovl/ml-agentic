@@ -8,10 +8,15 @@ policies и создает human approval gates." Concretely, this class:
   - persists state.json + audit_log.jsonl per workflow_id via WorkflowStateStore
   - checks that state transitions are legal (the spec's "Policy Engine", scoped
     to "is this transition allowed" rather than a general rule DSL)
-  - stops (without raising) at the one genuinely blocking human gate that isn't
-    already handled inside an individual agent: H5 Model Approval. H6
-    Production Release Approval is already enforced inside DeploymentAgent
-    itself; the Orchestrator just surfaces a `blocked` step result for it.
+  - stops (without raising) at the two genuinely blocking human gates that
+    aren't already handled inside an individual agent: H4 Training Approval
+    and H5 Model Approval. H6 Production Release Approval is already
+    enforced inside DeploymentAgent itself; the Orchestrator just surfaces a
+    `blocked` step result for it.
+  - propagates a rejection at either gate forward as a cascade of graceful
+    `SKIPPED` steps (training/evaluation/model_decision/approval/
+    model_registry/deployment, as applicable) rather than a failure — a
+    human saying "no" is a valid business outcome, not a system error.
   - supports --resume: a workflow_id with a saved state.json skips steps
     already recorded as completed and picks up where it left off
   - has NO real Notification client (Teams/Slack/Email) and does NOT wire
@@ -30,8 +35,9 @@ Human-in-the-loop gate mapping (spec's H1-H6):
     H2 Dataset Cleanup Approval  -> DatasetValidationAgent `failed` status (hard stop)
     H3 Label Review              -> LabelQAAgent `review_required` (standalone,
                                      not part of this forward chain — see module docstring)
-    H4 Training Approval         -> NOT IMPLEMENTED. No gate exists between
-                                     dataset_validation and training in this codebase.
+    H4 Training Approval         -> TrainingApprovalAgent (`training_approval` step, real,
+                                     blocking gate — reads dataset_quality_report.json,
+                                     sits between dataset_versioning and training)
     H5 Model Approval            -> HumanApprovalAgent (real, blocking gate)
     H6 Production Release        -> DeploymentAgent's production gate (real, blocking gate)
 """
@@ -55,6 +61,7 @@ from agentic_mlops.agents.human_approval import HumanApprovalAgent
 from agentic_mlops.agents.model_decision import ModelDecisionAgent
 from agentic_mlops.agents.model_registry import ModelRegistryAgent
 from agentic_mlops.agents.training import TrainingAgent
+from agentic_mlops.agents.training_approval import TrainingApprovalAgent
 from agentic_mlops.contracts.approvals import ApprovalAction, ApprovalInput
 from agentic_mlops.contracts.azure_ml import AzureMLConfig
 from agentic_mlops.contracts.data_intake import DataIntakeInput
@@ -74,6 +81,10 @@ from agentic_mlops.contracts.orchestrator import (
     OrchestratorStepResult,
 )
 from agentic_mlops.contracts.training import TrainingConfig, TrainingInput, TrainingMode
+from agentic_mlops.contracts.training_approval import (
+    TrainingApprovalAction,
+    TrainingApprovalInput,
+)
 from agentic_mlops.integrations.model_registry import (
     AzureMLModelRegistryClient,
     ModelRegistryClientBase,
@@ -83,6 +94,17 @@ from agentic_mlops.observability.logging import get_logger
 from agentic_mlops.tools.evaluation_runner import AzureMLEvaluationRunner
 from agentic_mlops.tools.report_writer import ReportWriter
 from agentic_mlops.tools.training_runner import AzureMLTrainingRunner
+
+# Steps that can pause the workflow (pending_approval=True) instead of failing,
+# and the fine-grained current_state label / pending_approval_id prefix each uses.
+_PENDING_LABELS: dict[str, str] = {
+    "training_approval": "TRAINING_APPROVAL_REQUIRED",
+    "approval": "MODEL_APPROVAL_REQUIRED",
+}
+_PENDING_ID_PREFIX: dict[str, str] = {
+    "training_approval": "appr_train",
+    "approval": "appr",
+}
 
 
 @dataclass
@@ -97,6 +119,15 @@ class _StepOutcome:
     # Overrides the coarse OrchestratorStatus mapping on failure, e.g. "blocked"
     # for a gate-blocked step (dataset_versioning / deployment) vs the default "failed".
     coarse: str | None = None
+
+
+def _skip(reason: str) -> _StepOutcome:
+    """A step that didn't run because an upstream gate rejected/skipped —
+    a graceful, cascading no-op, not a failure."""
+    return _StepOutcome(
+        success=True, status_label="SKIPPED", skipped=True,
+        key_outputs={"skipped": True, "skip_reason": reason},
+    )
 
 
 class OrchestratorWorkflow:
@@ -234,14 +265,14 @@ class OrchestratorWorkflow:
                 )
 
             if outcome.pending_approval:
-                self._transition(state, "MODEL_APPROVAL_REQUIRED", steps)
-                pending_id = f"appr_{inp.workflow_id}"
+                label = _PENDING_LABELS[step]
+                self._transition(state, label, steps)
+                pending_id = f"{_PENDING_ID_PREFIX[step]}_{inp.workflow_id}"
                 state["pending_approval_id"] = pending_id
                 return self._finish(
                     store, state, step_results, all_artifacts, OrchestratorStatus.PENDING_APPROVAL,
                     "Workflow paused: awaiting a human approval decision. Re-run with "
-                    "resume=True and approval_action set (or interactive_approval=True) "
-                    "to continue.",
+                    "resume=True and an action set (or interactive mode) to continue.",
                     pending_approval_id=pending_id,
                 )
 
@@ -279,6 +310,7 @@ class OrchestratorWorkflow:
             "dataset_structuring": self._step_dataset_structuring,
             "dataset_validation": self._step_dataset_validation,
             "dataset_versioning": self._step_dataset_versioning,
+            "training_approval": self._step_training_approval,
             "training": self._step_training,
             "evaluation": self._step_evaluation,
             "model_decision": self._step_model_decision,
@@ -418,9 +450,57 @@ class OrchestratorWorkflow:
             coarse=coarse,
         )
 
+    def _step_training_approval(
+        self, inp: OrchestratorInput, output_root: Path, step_outputs: dict, azure_config
+    ) -> _StepOutcome:
+        validation = step_outputs.get("dataset_validation")
+        if not validation:
+            return _StepOutcome(
+                False, "FAILED",
+                errors=[
+                    "training_approval requires the dataset_validation step to have run first."
+                ],
+            )
+        if not inp.interactive_training_approval and inp.training_approval_action is None:
+            # H4 Training Approval gate: a legitimate pause, not an error — see module
+            # docstring. Don't even call TrainingApprovalAgent; it would just fail with
+            # "Non-interactive mode requires --action".
+            return _StepOutcome(
+                success=True, status_label="PENDING", pending_approval=True,
+                key_outputs={"approved": False},
+            )
+
+        step_dir = output_root / "training_approval"
+        agent = TrainingApprovalAgent(artifacts_dir=step_dir)
+        result = agent.run(
+            TrainingApprovalInput(
+                dataset_report_path=validation["report_path"],
+                approver=inp.training_approver,
+                output_dir=str(step_dir),
+                interactive=inp.interactive_training_approval,
+                action=inp.training_approval_action,
+                force=inp.force_training_approval,
+            )
+        )
+        approved = result.success and result.action == TrainingApprovalAction.APPROVE_TRAINING
+        return _StepOutcome(
+            success=result.success,
+            status_label=str(result.status).upper() if result.success else "FAILED",
+            errors=result.errors,
+            artifacts=result.generated_artifacts,
+            key_outputs={
+                "approved": approved,
+                "status": str(result.status),
+                "action": str(result.action) if result.action else None,
+            },
+        )
+
     def _step_training(
         self, inp: OrchestratorInput, output_root: Path, step_outputs: dict, azure_config
     ) -> _StepOutcome:
+        training_approval = step_outputs.get("training_approval")
+        if training_approval is not None and not training_approval.get("approved"):
+            return _skip("training_approval (H4) was not approve_training")
         if not inp.training_config_path:
             return _StepOutcome(
                 False, "FAILED", errors=["training_config_path is required for the training step."]
@@ -475,6 +555,8 @@ class OrchestratorWorkflow:
                 False, "FAILED",
                 errors=["evaluation requires the training step to have run first."],
             )
+        if training.get("skipped"):
+            return _skip("training was skipped")
         dataset_path, data_yaml_path = self._effective_dataset(step_outputs, inp)
         weights_path = training.get("best_weights_path") or "dry_run"
 
@@ -530,6 +612,8 @@ class OrchestratorWorkflow:
                 False, "FAILED",
                 errors=["model_decision requires the evaluation step to have run first."],
             )
+        if evaluation.get("skipped"):
+            return _skip("evaluation was skipped")
         agent = ModelDecisionAgent(artifacts_dir=output_root / "model_decision")
         result = agent.run(
             ModelDecisionInput(
@@ -556,6 +640,8 @@ class OrchestratorWorkflow:
             return _StepOutcome(
                 False, "FAILED", errors=["approval requires the evaluation step to have run first."]
             )
+        if evaluation.get("skipped"):
+            return _skip("evaluation was skipped")
         if not inp.interactive_approval and inp.approval_action is None:
             # H5 Model Approval gate: a legitimate pause, not an error — see module
             # docstring. Don't even call HumanApprovalAgent; it would just fail with
@@ -595,10 +681,12 @@ class OrchestratorWorkflow:
     ) -> _StepOutcome:
         approval = step_outputs.get("approval")
         if approval is not None and not approval.get("approved"):
-            return _StepOutcome(success=True, status_label="SKIPPED", skipped=True)
+            return _skip("approval (H5) was not approve_model")
 
         training = step_outputs.get("training", {})
         evaluation = step_outputs.get("evaluation", {})
+        if training.get("skipped") or evaluation.get("skipped"):
+            return _skip("an upstream step was skipped")
         approval_dir = output_root / "approval"
 
         registry_client: ModelRegistryClientBase | None = None
@@ -643,10 +731,12 @@ class OrchestratorWorkflow:
     ) -> _StepOutcome:
         approval = step_outputs.get("approval")
         if approval is not None and not approval.get("approved"):
-            return _StepOutcome(success=True, status_label="SKIPPED", skipped=True)
+            return _skip("approval (H5) was not approve_model")
 
         registry = step_outputs.get("model_registry")
         training = step_outputs.get("training", {})
+        if training.get("skipped") or (registry is not None and registry.get("skipped")):
+            return _skip("an upstream step was skipped")
         if registry and registry.get("registry_path"):
             model_path = registry["registry_path"]
             model_version = registry.get("version")
@@ -699,11 +789,14 @@ class OrchestratorWorkflow:
             return False
         if prev == "NEW":
             return bool(steps) and nxt == f"{steps[0].upper()}_RUNNING"
-        if prev == "MODEL_APPROVAL_REQUIRED":
-            return nxt == "APPROVAL_RUNNING"
+        if prev in _PENDING_LABELS.values():
+            # Resuming from a pause: retry the step that paused us.
+            step = next(s for s, label in _PENDING_LABELS.items() if label == prev)
+            return nxt == f"{step.upper()}_RUNNING"
         if prev.endswith("_RUNNING"):
             step = prev[: -len("_RUNNING")].lower()
-            if step == "approval" and nxt == "MODEL_APPROVAL_REQUIRED":
+            pending_label = _PENDING_LABELS.get(step)
+            if pending_label and nxt == pending_label:
                 return True
             return nxt in (
                 f"{step.upper()}_COMPLETED", f"{step.upper()}_FAILED", f"{step.upper()}_BLOCKED"

@@ -1318,6 +1318,93 @@ def _print_approval_result(result) -> None:  # type: ignore[type-arg]
         console.print(f"\nArtifacts saved to: [bold]{artifacts_parent}[/bold]")
 
 
+@app.command("approve-training")
+def approve_training(
+    dataset_report: str = typer.Argument(..., help="Path to dataset_quality_report.json"),
+    output_dir: str = typer.Option(
+        None,
+        "--output-dir",
+        help="Where to save approval artifacts (default: <report dir>/training_approval_out)",
+    ),
+    approver: str = typer.Option(None, "--approver", help="Name of the approver"),
+    interactive: bool = typer.Option(
+        True, "--interactive/--no-interactive", help="Prompt for decision interactively"
+    ),
+    action: str = typer.Option(
+        None,
+        "--action",
+        help="Action in non-interactive mode: approve_training | reject_training | cancel",
+    ),
+    comment: str = typer.Option(None, "--comment", help="Optional human comment"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Force approve training on a dataset with warnings, in non-interactive mode.",
+    ),
+) -> None:
+    """H4 gate: review a dataset validation report and approve/reject starting training."""
+    from agentic_mlops.agents.training_approval import TrainingApprovalAgent  # noqa: PLC0415
+    from agentic_mlops.contracts.training_approval import (  # noqa: PLC0415
+        TrainingApprovalAction,
+        TrainingApprovalInput,
+    )
+
+    parsed_action: TrainingApprovalAction | None = None
+    if action:
+        try:
+            parsed_action = TrainingApprovalAction(action)
+        except ValueError:
+            valid = ", ".join(a.value for a in TrainingApprovalAction)
+            console.print(f"[red]Invalid action '{action}'. Valid values: {valid}[/red]")
+            raise typer.Exit(code=1)
+
+    out_dir = output_dir or str(Path(dataset_report).parent / "training_approval_out")
+
+    agent = TrainingApprovalAgent(artifacts_dir=Path(out_dir))
+    result = agent.run(
+        TrainingApprovalInput(
+            dataset_report_path=dataset_report,
+            approver=approver,
+            output_dir=out_dir,
+            interactive=interactive,
+            action=parsed_action,
+            comment=comment,
+            force=force,
+        )
+    )
+
+    _print_training_approval_result(result)
+
+    if not result.success:
+        raise typer.Exit(code=1)
+
+
+def _print_training_approval_result(result) -> None:  # type: ignore[type-arg]
+    status_color = {
+        "approved": "green",
+        "rejected": "yellow",
+        "cancelled": "red",
+        "pending": "white",
+    }.get(str(result.status), "white")
+
+    label = str(result.status).upper()
+    console.print(f"\n[bold {status_color}]Training Approval (H4): {label}[/bold {status_color}]")
+    console.print(f"Action:   {result.action or 'N/A'}")
+    console.print(f"Approver: {result.approver or 'N/A'}")
+
+    if result.comment:
+        console.print(f"Comment:  {result.comment}")
+
+    if result.errors:
+        console.print("\n[bold red]Errors[/bold red]")
+        for err in result.errors:
+            console.print(f"  [red]FAIL[/red] {err}")
+
+    if result.generated_artifacts:
+        artifacts_parent = Path(result.generated_artifacts[0]).parent
+        console.print(f"\nArtifacts saved to: [bold]{artifacts_parent}[/bold]")
+
+
 @app.command("register-model")
 def register_model(
     model_name: str = typer.Option(..., "--model-name", help="Registry model name"),

@@ -64,6 +64,10 @@ agentic-mlops deploy-model outputs/model_registry/my-model/versions/1/model/best
 agentic-mlops monitor ./logs/predictions.jsonl --endpoint-name factory-defects-prod \
   --baseline-class-distribution ./baseline/class_distribution.json --critical-classes crack
 
+# CLI: H4 gate — approve/reject starting training on a validated dataset
+agentic-mlops approve-training ./runs/workflow_001/dataset_quality_report.json \
+  --no-interactive --action approve_training --approver jane.doe
+
 # CLI: validate a YOLO dataset
 agentic-mlops validate-dataset /path/to/dataset
 
@@ -168,7 +172,7 @@ This is a **sequential multi-agent MLOps pipeline** for YOLO object detection. A
 - `integrations/` — MLflow tracking hierarchy (see below) + model registry clients (Local/MLflow/Azure ML, see below); `azure_ml_client.py` only holds the SDK v2 `MLClient` factories (`DefaultAzureMLClientFactory` / `FakeAzureMLClientFactory`) — real Azure ML training/evaluation go through `tools/training_runner.py::AzureMLTrainingRunner` / `tools/evaluation_runner.py::AzureMLEvaluationRunner`, always injected by the CLI. `YoloTrainer`/`YoloEvaluator` raise a clear `RuntimeError` for `azure_train`/`azure_eval` mode if no runner was injected — there is no legacy fallback path anymore (removed 2026-07-10; it used to raise `NotImplementedError` via a now-deleted `AzureMLTrainingClient` stub)
 - `azure_jobs/` — entry scripts submitted to Azure ML as command jobs: `train_yolo.py` (training), `eval_yolo.py` (evaluation, writes `metrics.json` + plots). Both are self-contained (no `agentic_mlops` package import) since only this directory is uploaded as the job's code snapshot
 - `observability/` — JSON-line structured logging via `configure_logging()`; use `--json-logs` CLI flag; all modules use `get_logger(__name__)` with `extra=` for structured fields
-- `cli/main.py` — Typer app with fifteen commands: `data-intake`, `structure-dataset`, `pseudo-label`, `validate-dataset`, `label-qa`, `version-dataset`, `model-decision`, `deploy-model`, `monitor`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`, `run-workflow`
+- `cli/main.py` — Typer app with sixteen commands: `data-intake`, `structure-dataset`, `pseudo-label`, `validate-dataset`, `label-qa`, `version-dataset`, `model-decision`, `deploy-model`, `monitor`, `approve-training`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`, `run-workflow`
 
 ### Training and evaluation runners
 
@@ -423,9 +427,9 @@ top-level router the spec describes as calling "нужных агентов, п�
 `MVPWorkflow`: it chains other agents, it doesn't wrap one tool.
 
 **Configurable pipeline**: `contracts/orchestrator.py::PIPELINE_STEPS` is the full
-10-step forward chain (`data_intake`, `dataset_structuring`, `dataset_validation`,
-`dataset_versioning`, `training`, `evaluation`, `model_decision`, `approval`,
-`model_registry`, `deployment`); `OrchestratorInput.steps` picks any ordered subset
+11-step forward chain (`data_intake`, `dataset_structuring`, `dataset_validation`,
+`dataset_versioning`, `training_approval`, `training`, `evaluation`, `model_decision`,
+`approval`, `model_registry`, `deployment`); `OrchestratorInput.steps` picks any ordered subset
 (reordered to canonical order regardless of input order), defaulting to
 `DEFAULT_STEPS` — the same 5 steps `run-mvp`/`MVPWorkflow` already runs — when
 omitted. Annotation/Label QA are deliberately excluded (manual, interactive
@@ -453,28 +457,46 @@ what the spec's own transition-table example calls for. An illegal transition
 raises `RuntimeError` (a should-never-happen internal consistency check, covered by
 a direct white-box unit test).
 
-**H5 Model Approval gate**: when `interactive_approval=False` and no
-`approval_action` is configured, the orchestrator pauses instead of calling
-`HumanApprovalAgent` (which would just fail with "Non-interactive mode requires
---action") — `status=pending_approval`, `current_state="MODEL_APPROVAL_REQUIRED"`, a
-synthesized `pending_approval_id` (`appr_<workflow_id>` — a lightweight local
-identifier, not a ticketing-system ID; there is no separate Approval Store service,
-only the same on-disk `approval_decision.json` pattern every other gate already
-uses). Re-running with `resume=True` and either `approval_action` set or
-`interactive_approval=True` picks the approval step back up. A `reject_model` /
+**H4 Training Approval / H5 Model Approval gates**: when running non-interactively
+with no action configured, the orchestrator pauses instead of calling the
+underlying agent (which would just fail with "Non-interactive mode requires
+--action") — `status=pending_approval`, `current_state` set to
+`"TRAINING_APPROVAL_REQUIRED"` (H4) or `"MODEL_APPROVAL_REQUIRED"` (H5), a
+synthesized `pending_approval_id` (`appr_train_<workflow_id>` / `appr_<workflow_id>`
+— a lightweight local identifier, not a ticketing-system ID; there is no separate
+Approval Store service, only the same on-disk decision-JSON pattern every gate
+already uses). Re-running with `resume=True` and either the action set or
+interactive mode picks that step back up. A `reject_training` / `reject_model` /
 `request_retraining` / etc. decision is a valid business outcome, not a system
-failure — the workflow reaches `COMPLETED`, and `model_registry`/`deployment` (if
-included in `steps`) are marked `SKIPPED` rather than attempted or failed.
+failure — the workflow reaches `COMPLETED`, and every downstream step is marked
+`SKIPPED` rather than attempted or failed: rejecting at H4 cascades through
+`training`/`evaluation`/`model_decision`/`approval`/`model_registry`/`deployment`;
+rejecting at H5 cascades through `model_registry`/`deployment`. `_PENDING_LABELS`/
+`_PENDING_ID_PREFIX` in `workflows/orchestrator.py` generalize this pause/resume/
+cascade machinery across both gates rather than duplicating it.
+
+**H4 Training Approval** (`agents/training_approval.py::TrainingApprovalAgent`,
+`contracts/training_approval.py`) — sits between `dataset_versioning` and
+`training` in `PIPELINE_STEPS` (not in `DEFAULT_STEPS` — opt-in only, `run-mvp`'s
+5-step chain is unaffected). Mirrors `HumanApprovalAgent`'s interactive/
+non-interactive shape but reads `dataset_quality_report.json` instead of an
+evaluation report, with a smaller decision space (`approve_training` /
+`reject_training` / `cancel` — no "request more data"/"request label review", since
+those are dataset fixes that would need a brand new `DatasetValidationAgent` run,
+not something this gate can act on directly). Cannot approve on a `failed` dataset
+status even with `--force`; a `warning` status requires `--force` in non-interactive
+mode. CLI: `agentic-mlops approve-training <dataset_quality_report_path> [--action
+approve_training|reject_training|cancel] [--no-interactive] [--force]` —
+standalone, same pattern as `approve`.
 
 **HITL gate mapping (spec's H1-H6)**: H1 Data Source Approval maps to
 `DataIntakeAgent`'s `needs_human_source_approval` status (soft — surfaced, does not
 block); H2 Dataset Cleanup Approval maps to `DatasetValidationAgent` failing (hard
 stop); H3 Label Review maps to `LabelQAAgent` (standalone, not part of this forward
-chain); **H4 Training Approval is not implemented** — no gate exists between
-`dataset_validation` and `training` anywhere in this codebase; H5 Model Approval is
-`HumanApprovalAgent` (see above, a real blocking gate); H6 Production Release is
-`DeploymentAgent`'s existing production gate (the orchestrator just surfaces its
-`blocked` result).
+chain); H4 Training Approval is `TrainingApprovalAgent` (see above, a real blocking
+gate); H5 Model Approval is `HumanApprovalAgent` (a real blocking gate); H6
+Production Release is `DeploymentAgent`'s existing production gate (the orchestrator
+just surfaces its `blocked` result).
 
 **Not implemented**: a real Notification client (Teams/Slack/Email — state
 transitions are only visible via `audit_log.jsonl` and structured logs); MLflow
@@ -527,7 +549,6 @@ status of every planned item). Still missing:
 - Azure Monitor / Application Insights integration for `MonitoringAgent` — log ingestion is a local JSONL file only, not live endpoint metrics/traces; hard samples are surfaced in a manifest for manual triage, not automatically fed back into Data Intake
 - All 8 originally-unimplemented agents (`LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, `AnnotationAgent`, `DatasetVersioningAgent`, `ModelDecisionAgent`, `DeploymentAgent`, `MonitoringAgent`) **and** the top-level Orchestrator Agent (`OrchestratorWorkflow`, see "Orchestrator" above) are now implemented — every spec in `agentic_mlops_workflow_docs/agents/` has a corresponding implementation.
 - Real Notification client (Teams/Slack/Email) for the Orchestrator — state transitions are only visible via `audit_log.jsonl` and structured logs, not pushed anywhere
-- H4 Training Approval gate — no gate exists between `dataset_validation` and `training` anywhere in this codebase (training has always run automatically once validation passes)
 - MLflow tracking inside `OrchestratorWorkflow` itself — each step's own CLI command (or `run-mvp`) still supports `--enable-mlflow` independently; `run-workflow` does not yet inject an MLflow client into the agents it invokes
 
 Note: `agentic_mlops_workflow_docs/docs/` and `agentic_mlops_workflow_docs/agents/` are
