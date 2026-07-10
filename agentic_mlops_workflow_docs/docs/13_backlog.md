@@ -1,6 +1,6 @@
 # Backlog
 
-> Statuses last verified 2026-07-10: 419/419 unit tests passing, `ruff check` clean.
+> Statuses last verified 2026-07-10: 443/443 unit tests passing, `ruff check` clean.
 
 ## Phase 0 — Data Ingestion
 
@@ -24,7 +24,7 @@ Structuring Agent → Dataset Validation Agent → ...`), not part of the origin
 - [x] Реализовать Evaluation Agent с mocked metrics для dry-run.
 - [x] Реализовать Decision Policy (`workflows/policies.py`).
 - [x] Реализовать Human Approval через CLI.
-- [x] Написать unit tests (419 tests across 19 files).
+- [x] Написать unit tests (443 tests across 20 files).
 - [x] Написать README с examples.
 - [x] Реализовать Model Registry Agent + local filesystem backend (pulled forward from Phase 4).
 - [x] Model Decision Agent (`agents/model_decision.py`, `tools/model_decider.py`) — was originally MVP step "4. Decision" per `01_mvp_scope.md`, but the actual implementation folded threshold checks directly into `EvaluationAgent` + `HumanApprovalAgent` instead of giving it a standalone agent; this backfills that as a genuinely additive step rather than duplicating existing logic. Reads `evaluation_report.json` (already produced by `EvaluationAgent`, which already ran `workflows.policies.evaluate_metrics_against_policy` — **not recomputed here**) and maps its 7-way `EvaluationRecommendation` onto the spec's 5-way `PROMOTE`/`REJECT`/`RETRAIN`/`NEED_MORE_DATA`/`NEED_LABEL_REVIEW`. Adds two checks that existed only as unused Pydantic fields nowhere else in the codebase until now: (1) **baseline comparison** — `PromotionPolicy.require_improvement_over_baseline`/`baseline_improvement_min_map50` (defined in `workflows/policies.py` since the MVP but never read by any code path); (2) **runtime budget** — `EvaluationConfig.runtime.max_latency_ms`/`max_model_size_mb` (defined in `contracts/evaluation.py` since the MVP, also never read anywhere). Either check failing downgrades a `PROMOTE` to `RETRAIN` (never the reverse, never further downgrades an already-non-PROMOTE decision). Does not benchmark inference itself — accepts an externally-measured `measured_latency_ms`. Never auto-approves anything — `HumanApprovalAgent` remains the sole approval gate. CLI: `agentic-mlops model-decision <evaluation_report_path> [--promotion-policy ...] [--evaluation-config ...] [--baseline-report ...] [--measured-latency-ms ...]` — standalone, not wired into `run-mvp`. Writes `decision_report.json`/`.md`.
@@ -72,6 +72,22 @@ Structuring Agent → Dataset Validation Agent → ...`), not part of the origin
 - [x] Drift detection (`_drift_score()` — total variation distance between the current window's class distribution and a baseline `{class: count_or_proportion}` JSON; dependency-free, no scipy). Skipped entirely (`drift_score=0.0`) when no baseline is given.
 - [ ] Hard sample dataset generation (the manifest lists hard samples for a human to triage; it is not fed back into Data Intake / Dataset Structuring automatically — that hand-off is still a manual step).
 - [x] Retraining trigger thresholds from the spec's `triggers:` YAML block (`MonitoringThresholds`: `low_confidence_ratio`, `p95_latency_ms`, `critical_class_drop`, `drift_score`, `error_rate`) mapped to a `recommended_action` (`no_action` / `notify_ops` / `need_more_data` / `model_review` / `create_retraining_request`), highest-severity trigger wins when several fire at once (`critical_class_drop` > `drift_score` > `low_confidence_ratio` > latency/error). **Never triggers retraining itself — only recommends** (matches the "no auto-promote" rule every other agent in this codebase already follows); actually acting on `create_retraining_request` (looping back to Data Intake) remains a manual/human step.
+
+## Phase 6 — Orchestration
+
+Per `agentic_mlops_workflow_docs/agents/00_orchestrator_agent.md`.
+
+- [x] Orchestrator (`workflows/orchestrator.py::OrchestratorWorkflow`, `contracts/orchestrator.py`) — routes between a configurable, ordered subset of all 10 forward-pipeline steps (`PIPELINE_STEPS`: data_intake, dataset_structuring, dataset_validation, dataset_versioning, training, evaluation, model_decision, approval, model_registry, deployment). Defaults to the original 5 MVP steps (`DEFAULT_STEPS`) when `steps` is omitted, same chain as `run-mvp`. Deliberately excludes Annotation/Label QA (manual, interactive labeling-assist steps run *before* a dataset is finalized — not something to blindly auto-chain) and Monitoring (a separate, recurring, post-deploy concern). Not a `BaseAgent` subclass, matching `MVPWorkflow`'s own placement in `workflows/` rather than `agents/`.
+- [x] State Store (`integrations/workflow_state_store.py::WorkflowStateStore`) — per the spec's own "MVP реализация" note ("simple Python class + JSON state file"): `runs/<workflow_id>/state.json` (current snapshot, overwritten each step) + `runs/<workflow_id>/audit_log.jsonl` (append-only event history). No networked state/audit service.
+- [x] Policy Engine, scoped to "is this transition allowed" (`OrchestratorWorkflow._is_legal`) — not a general rule DSL. An illegal transition raises `RuntimeError`; every transition the orchestrator itself makes is validated against this table (tested directly as a white-box unit).
+- [x] Approval requests (H5 Model Approval gate) — when `interactive_approval=False` and no `approval_action` is given, the orchestrator pauses (`status=pending_approval`, `current_state="MODEL_APPROVAL_REQUIRED"`, a synthesized `pending_approval_id`) instead of calling `HumanApprovalAgent` (which would just error). Re-running with `resume=True` and either an `approval_action` or `interactive_approval=True` picks the approval step back up. No separate Approval Store service — the same on-disk `approval_decision.json` gate every other agent already uses.
+- [x] Failure handling — an exception during a step is caught, its traceback (truncated) written to `audit_log.jsonl`, and the workflow transitions to `FAILED`; re-running with `resume=True` retries only that step (and any after it), never re-running steps already recorded as completed.
+- [x] Retry / resume (`OrchestratorInput.resume`) — a `workflow_id` with an existing `state.json` is required to pass `resume=True` (a clear error otherwise, to avoid silently interleaving two runs' audit trails under one ID); resuming an already-`completed` workflow returns immediately without re-invoking any agent.
+- [x] "Collect artifact links" — every step's artifacts are accumulated into `OrchestratorOutput.artifacts`; a final `orchestrator_report.json`/`.md` is written via `ReportWriter.write_orchestrator_report()`.
+- [ ] Notifications (Teams/Slack/Email) — **not implemented**. No notification client exists in this codebase; state transitions are only visible via `audit_log.jsonl` and structured logs.
+- [ ] H4 Training Approval gate — **not implemented**. No gate exists between `dataset_validation` and `training` in this codebase (matches the rest of the codebase: training has always run automatically once validation passes).
+- [ ] MLflow tracking inside `OrchestratorWorkflow` — **not wired up**. Each step's own CLI command (or `run-mvp`) still supports `--enable-mlflow`; `run-workflow` does not yet inject an MLflow client into the agents it invokes.
+- CLI: `agentic-mlops run-workflow --workflow-id <id> --config configs/orchestrator.yaml [--runs-dir runs] [--resume]` — reads step selection and all per-step config from one YAML file (see `configs/orchestrator.example.yaml`), unlike `run-mvp`'s fixed 5-step chain with individual CLI flags.
 
 ## Future improvements
 

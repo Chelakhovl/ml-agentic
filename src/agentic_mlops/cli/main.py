@@ -1559,6 +1559,94 @@ def run_mvp(
         raise typer.Exit(code=1)
 
 
+@app.command("run-workflow")
+def run_workflow(
+    workflow_id: str = typer.Option(..., "--workflow-id", help="Unique ID for this workflow run"),
+    config: str = typer.Option(
+        ...,
+        "--config",
+        help="Path to an orchestrator config YAML (see configs/orchestrator.example.yaml)",
+    ),
+    runs_dir: str = typer.Option(
+        "runs", "--runs-dir", help="Root directory for state.json/audit_log.jsonl/artifacts"
+    ),
+    resume: bool = typer.Option(
+        False, "--resume", help="Resume a previously started workflow_id, skipping completed steps"
+    ),
+    trigger: str = typer.Option("manual", "--trigger", help="What triggered this run"),
+) -> None:
+    """Run the full, configurable Orchestrator pipeline (any subset of PIPELINE_STEPS).
+
+    Unlike `run-mvp` (fixed 5-step chain), this reads step selection and every
+    step's config from a single YAML file, persists state.json/audit_log.jsonl
+    under --runs-dir/<workflow-id>/, and supports --resume after a pause (e.g.
+    at the human approval gate) or a failure.
+    """
+    from agentic_mlops.contracts.orchestrator import OrchestratorInput  # noqa: PLC0415
+    from agentic_mlops.workflows.orchestrator import OrchestratorWorkflow  # noqa: PLC0415
+
+    try:
+        inp = OrchestratorInput.from_yaml(
+            config,
+            workflow_id=workflow_id,
+            runs_dir=runs_dir,
+            resume=resume,
+            trigger=trigger,
+        )
+    except Exception as exc:
+        console.print(f"[red]Cannot load orchestrator config '{config}': {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    result = OrchestratorWorkflow().run(inp)
+
+    _print_orchestrator_result(result)
+
+    if not result.success:
+        raise typer.Exit(code=1)
+
+
+def _print_orchestrator_result(result) -> None:  # type: ignore[type-arg]
+    status_color = {
+        "completed": "green",
+        "pending_approval": "yellow",
+        "blocked": "yellow",
+        "failed": "red",
+    }.get(str(result.status), "white")
+
+    label = str(result.status).upper()
+    console.print(f"\n[bold {status_color}]Orchestrator: {label}[/bold {status_color}]")
+    console.print(f"Workflow ID   : {result.workflow_id}")
+    console.print(f"Current state : {result.current_state}")
+
+    table = Table(title="Steps", show_header=True)
+    table.add_column("Step", style="cyan")
+    table.add_column("Status")
+    table.add_column("OK?", justify="center")
+    for step in result.steps:
+        ok_str = "[green]yes[/green]" if step.success else "[red]no[/red]"
+        table.add_row(step.step, step.status, ok_str)
+    console.print(table)
+
+    if result.pending_approval_id:
+        console.print(
+            f"\n[yellow]Awaiting human approval — pending_approval_id: "
+            f"{result.pending_approval_id}[/yellow]"
+        )
+        console.print(
+            "Re-run with --resume once a decision has been made "
+            "(set approval_action in the config, or interactive_approval: true)."
+        )
+
+    if result.errors:
+        console.print("\n[bold red]Errors[/bold red]")
+        for err in result.errors:
+            console.print(f"  [red]FAIL[/red] {err}")
+
+    if result.state_path:
+        console.print(f"\nState file : [bold]{result.state_path}[/bold]")
+        console.print(f"Audit log  : [bold]{result.audit_log_path}[/bold]")
+
+
 def _print_mvp_summary(result) -> None:  # type: ignore[type-arg]
     status_color = "green" if result.success else "red"
     label = str(result.workflow_status).upper()

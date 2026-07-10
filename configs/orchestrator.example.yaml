@@ -1,0 +1,63 @@
+# Orchestrator workflow configuration.
+# Copy to orchestrator.yaml and adjust. workflow_id / resume / runs_dir are
+# usually passed as CLI flags instead (they change per invocation), but can
+# also be set here.
+#
+# steps: which pipeline steps to run, in order. Omit to default to the 5
+# original MVP steps (dataset_validation, training, evaluation, approval,
+# model_registry) — same as `run-mvp`.
+steps:
+  - dataset_validation
+  - training
+  - evaluation
+  - approval
+  - model_registry
+  # - data_intake
+  # - dataset_structuring
+  # - dataset_versioning
+  # - model_decision
+  # - deployment
+
+dry_run: true
+
+# ── dataset_validation ─────────────────────────────────────────────────────
+# Used directly when dataset_structuring is not in `steps`.
+dataset_path: /path/to/my_yolo_dataset
+data_yaml_path: /path/to/my_yolo_dataset/data.yaml
+fail_on_warnings: false
+
+# ── data_intake / dataset_structuring (optional) ───────────────────────────
+# raw_data_path: /path/to/raw_images
+# dataset_name: factory_defects
+# data_source: camera_batch_1
+# classes: [scratch, dent, crack]
+# label_format: yolo   # yolo | coco
+# split_strategy: random   # random | grouped_by_source
+
+# ── training ─────────────────────────────────────────────────────────────
+training_config_path: configs/training.yaml
+# training_runner: local-yolo   # fake (dry_run) | local-yolo | azure-ml
+
+# ── evaluation ───────────────────────────────────────────────────────────
+# evaluation_config_path: configs/evaluation.yaml
+# evaluation_runner: local-yolo
+# promotion_policy_path: configs/promotion_policy.yaml
+
+# ── approval ─────────────────────────────────────────────────────────────
+interactive_approval: true
+# approval_action: approve_model   # required when interactive_approval: false
+# approver: jane.doe
+
+# ── model_registry (optional) ───────────────────────────────────────────────
+model_name: yolo-model
+registry_backend: local   # local | mlflow | azure_ml
+registry_dir: outputs/model_registry
+
+# ── deployment (optional) ───────────────────────────────────────────────────
+# deployment_target: staging   # staging | production
+# export_format: onnx          # onnx | pt
+# deployment_dir: outputs/deployments
+# production_approval_path: ./runs/<workflow_id>/artifacts/approval/approval_decision.json
+# rollback_plan: "Revert traffic to previous release via current.json"
+
+# azure_config_path: configs/azure_ml.yaml   # required for any azure-ml/azure_ml choice above

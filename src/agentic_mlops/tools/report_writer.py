@@ -18,6 +18,7 @@ from agentic_mlops.contracts.evaluation import EvaluationOutput
 from agentic_mlops.contracts.label_qa import LabelQAOutput
 from agentic_mlops.contracts.model_decision import ModelDecisionOutput
 from agentic_mlops.contracts.monitoring import MonitoringOutput
+from agentic_mlops.contracts.orchestrator import OrchestratorOutput
 from agentic_mlops.contracts.training import TrainingOutput, training_mode_to_runner
 from agentic_mlops.contracts.workflows import MVPWorkflowOutput
 from agentic_mlops.observability.logging import get_logger
@@ -408,6 +409,39 @@ class ReportWriter:
         )
         return json_path, md_path
 
+    def write_orchestrator_report(
+        self,
+        output: OrchestratorOutput,
+        artifacts_dir: Path,
+    ) -> tuple[Path, Path]:
+        """Write orchestrator_report.json and .md. Returns (json_path, md_path)."""
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        json_path = artifacts_dir / "orchestrator_report.json"
+        md_path = artifacts_dir / "orchestrator_report.md"
+
+        payload: dict[str, Any] = {
+            "generated_at": datetime.now(tz=UTC).isoformat(),
+            "workflow_id": output.workflow_id,
+            "success": output.success,
+            "status": output.status,
+            "current_state": output.current_state,
+            "last_agent": output.last_agent,
+            "pending_approval_id": output.pending_approval_id,
+            "steps": [s.model_dump() for s in output.steps],
+            "state_path": output.state_path,
+            "audit_log_path": output.audit_log_path,
+            "errors": output.errors,
+            "message": output.message,
+        }
+
+        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        md_path.write_text(_orchestrator_report_md(payload), encoding="utf-8")
+
+        logger.info(
+            "Orchestrator report written", extra={"json": str(json_path), "md": str(md_path)}
+        )
+        return json_path, md_path
+
     def write_workflow_summary(
         self,
         output: MVPWorkflowOutput,
@@ -561,6 +595,56 @@ def _deployment_report_md(report: dict[str, Any]) -> str:
         for chk in report["smoke_test_results"]:
             lines.append(f"- {chk}")
         lines.append("")
+
+    lines.append(f"**Message:** {report['message']}")
+    return "\n".join(lines)
+
+
+def _orchestrator_report_md(report: dict[str, Any]) -> str:
+    status_label = str(report["status"]).upper()
+    lines = [
+        "# Orchestrator Report",
+        "",
+        f"**Workflow ID:** `{report['workflow_id']}`  ",
+        f"**Status:** `{status_label}`  ",
+        f"**Current state:** `{report['current_state']}`  ",
+        f"**Generated:** {report['generated_at']}",
+        "",
+    ]
+
+    if report["pending_approval_id"]:
+        lines += [
+            "## Pending Approval", "",
+            "Awaiting a human decision — `pending_approval_id`: "
+            f"`{report['pending_approval_id']}`.",
+            "",
+        ]
+
+    if report["steps"]:
+        lines += ["## Steps", "", "| Step | Status | Success |", "|------|--------|---------|"]
+        for step in report["steps"]:
+            ok = "yes" if step["success"] else "no"
+            lines.append(f"| {step['step']} | {step['status']} | {ok} |")
+        lines.append("")
+
+    for step in report["steps"]:
+        if step["errors"]:
+            lines += [f"### {step['step'].capitalize()} Errors", ""]
+            for err in step["errors"]:
+                lines.append(f"- {err}")
+            lines.append("")
+
+    if report["errors"]:
+        lines += ["## Workflow Errors", ""]
+        for err in report["errors"]:
+            lines.append(f"- {err}")
+        lines.append("")
+
+    lines += [
+        f"**State file:** `{report['state_path'] or 'N/A'}`  ",
+        f"**Audit log:** `{report['audit_log_path'] or 'N/A'}`",
+        "",
+    ]
 
     lines.append(f"**Message:** {report['message']}")
     return "\n".join(lines)

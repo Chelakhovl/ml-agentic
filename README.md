@@ -71,13 +71,13 @@ src/agentic_mlops/
   agents/           ← orchestration layer (5 MVP agents + data-intake, structure-dataset, pseudo-label, label-qa, dataset-versioning, model-decision, deployment, monitoring)
   contracts/        ← Pydantic I/O models
   tools/            ← dataset validator/structurer, YOLO trainer/evaluator, data intake scanner, pseudo-labeler, label QA checker, model decider, deployer, monitor, report writer
-  integrations/     ← Azure ML client, MLflow tracking, model + dataset registry backends
+  integrations/     ← Azure ML client, MLflow tracking, model + dataset registry backends, workflow state store
   azure_jobs/       ← entry scripts submitted to Azure ML (train_yolo.py, eval_yolo.py)
-  workflows/        ← MVPWorkflow, promotion policy
+  workflows/        ← MVPWorkflow (5-step), OrchestratorWorkflow (full configurable pipeline), promotion policy
   observability/    ← structured logging
   cli/              ← Typer CLI
 tests/
-  unit/             ← 419 tests across all agents, tools, and integrations
+  unit/             ← 443 tests across all agents, tools, and integrations
   conftest.py       ← shared fixtures
 configs/
   training.example.yaml
@@ -105,6 +105,7 @@ configs/
 | `approve` | Record a human approval decision (interactive or `--no-interactive --action ...`) |
 | `register-model` | Register an approved model: `--backend local` (default) \| `mlflow` \| `azure_ml` |
 | `run-mvp` | Chain all five agents end-to-end (validate → train → evaluate → approve → register) |
+| `run-workflow` | Run the full, configurable Orchestrator pipeline (any subset of 10 steps, config from one YAML file, persistent state + resume) |
 
 See `agentic-mlops <command> --help` for every flag, or [`CLAUDE.md`](CLAUDE.md) for a full
 architecture walkthrough with worked examples for each runner and backend.
