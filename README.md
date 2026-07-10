@@ -68,16 +68,16 @@ pytest tests/unit -v
 
 ```
 src/agentic_mlops/
-  agents/           ← orchestration layer (5 MVP agents + data-intake, structure-dataset, pseudo-label, label-qa)
+  agents/           ← orchestration layer (5 MVP agents + data-intake, structure-dataset, pseudo-label, label-qa, dataset-versioning)
   contracts/        ← Pydantic I/O models
   tools/            ← dataset validator/structurer, YOLO trainer/evaluator, data intake scanner, pseudo-labeler, label QA checker, report writer
-  integrations/     ← Azure ML client, MLflow tracking, model registry backends
+  integrations/     ← Azure ML client, MLflow tracking, model + dataset registry backends
   azure_jobs/       ← entry scripts submitted to Azure ML (train_yolo.py, eval_yolo.py)
   workflows/        ← MVPWorkflow, promotion policy
   observability/    ← structured logging
   cli/              ← Typer CLI
 tests/
-  unit/             ← 328 tests across all agents, tools, and integrations
+  unit/             ← 347 tests across all agents, tools, and integrations
   conftest.py       ← shared fixtures
 configs/
   training.example.yaml
@@ -96,6 +96,7 @@ configs/
 | `pseudo-label` | Pre-label images with an approved YOLO model, routed into high/medium/low confidence buckets — standalone, not part of `run-mvp` |
 | `validate-dataset` | Validate a YOLO dataset locally — no Azure needed |
 | `label-qa` | Check label quality (suspicious bbox geometry, class imbalance, optional reference-model disagreement) — standalone, not part of `run-mvp` |
+| `version-dataset` | Register a clean, structured dataset as a new version with lineage (hash-deduplicated) — standalone, not part of `run-mvp` |
 | `train` | Train a YOLO model: `fake` (dry-run plan) \| `local-yolo` (Ultralytics) \| `azure-ml` (Azure ML SDK v2) |
 | `evaluate` | Evaluate a model and apply the promotion policy: `fake` \| `local-yolo` \| `azure-ml` |
 | `approve` | Record a human approval decision (interactive or `--no-interactive --action ...`) |

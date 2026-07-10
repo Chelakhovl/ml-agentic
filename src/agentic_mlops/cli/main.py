@@ -510,6 +510,96 @@ def _print_label_qa_result(result) -> None:  # type: ignore[type-arg]
         console.print(f"\nReport saved to: [bold]{result.report_path}[/bold]")
 
 
+def _print_dataset_versioning_result(result) -> None:  # type: ignore[type-arg]
+    status_color = {
+        "registered": "green",
+        "deduplicated": "yellow",
+        "blocked": "yellow",
+        "failed": "red",
+    }.get(str(result.status), "white")
+
+    label = str(result.status).upper()
+    console.print(f"\n[bold {status_color}]Dataset Versioning: {label}[/bold {status_color}]")
+    if result.dataset_name:
+        console.print(f"Dataset name : {result.dataset_name}")
+    if result.version is not None:
+        console.print(f"Version      : {result.version}")
+    if result.hash:
+        console.print(f"Hash         : {result.hash[:16]}...")
+    if result.dataset_version_path:
+        console.print(f"Path         : [bold]{result.dataset_version_path}[/bold]")
+    if result.block_reason:
+        console.print(f"\n[yellow]Blocked: {result.block_reason}[/yellow]")
+    if result.errors:
+        console.print("\n[bold red]Errors[/bold red]")
+        for err in result.errors:
+            console.print(f"  [red]FAIL[/red] {err}")
+
+
+@app.command("version-dataset")
+def version_dataset(
+    dataset_path: str = typer.Argument(..., help="Path to a structured YOLO dataset"),
+    dataset_name: str = typer.Option(..., "--dataset-name", help="Registry name for this dataset"),
+    registry_dir: str = typer.Option(
+        "outputs/dataset_registry", "--registry-dir", help="Root of the local dataset registry"
+    ),
+    parent_version: int = typer.Option(
+        None, "--parent-version", help="Version this one derives from, if any"
+    ),
+    workflow_id: str = typer.Option(
+        None, "--workflow-id", help="Workflow that produced this dataset"
+    ),
+    validation_report: str = typer.Option(
+        None,
+        "--validation-report",
+        help="Path to dataset_quality_report.json — blocks registration if status='failed'",
+    ),
+    label_quality_report: str = typer.Option(
+        None,
+        "--label-quality-report",
+        help="Path to label_quality_report.json — blocks registration if status='failed'",
+    ),
+    approved_by: str = typer.Option(None, "--approved-by", help="Name of the approver"),
+    source_batches: str = typer.Option(
+        None, "--source-batches", help="Comma-separated list of source batch identifiers"
+    ),
+    output_dir: str = typer.Option(
+        None,
+        "--output-dir",
+        help="Where to save the version report (default: <registry-dir>/version_out)",
+    ),
+) -> None:
+    """Register a structured YOLO dataset as a new version with lineage."""
+    from agentic_mlops.agents.dataset_versioning import DatasetVersioningAgent  # noqa: PLC0415
+    from agentic_mlops.contracts.dataset_versioning import DatasetVersioningInput  # noqa: PLC0415
+
+    artifacts_dir = Path(output_dir) if output_dir else Path(registry_dir) / "version_out"
+
+    agent = DatasetVersioningAgent(artifacts_dir=artifacts_dir)
+    result = agent.run(
+        DatasetVersioningInput(
+            dataset_path=dataset_path,
+            dataset_name=dataset_name,
+            registry_dir=registry_dir,
+            parent_version=parent_version,
+            workflow_id=workflow_id,
+            validation_report_path=validation_report,
+            label_quality_report_path=label_quality_report,
+            approved_by=approved_by,
+            source_batches=(
+                [b.strip() for b in source_batches.split(",") if b.strip()]
+                if source_batches
+                else []
+            ),
+        )
+    )
+
+    _print_dataset_versioning_result(result)
+
+    if not result.success:
+        raise typer.Exit(code=1)
+
+
 @app.command("train")
 def train(
     dataset_path: str = typer.Option(..., "--dataset-path", help="YOLO dataset root directory"),

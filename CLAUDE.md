@@ -42,6 +42,10 @@ agentic-mlops structure-dataset /path/to/raw_video_frames \
 # CLI: pre-label images with an approved YOLO model (standalone — not part of run-mvp)
 agentic-mlops pseudo-label /path/to/unlabeled_images --model-path models/approved/best.pt
 
+# CLI: register a clean, structured dataset as a new version + lineage (standalone)
+agentic-mlops version-dataset ./runs/structured --dataset-name factory_defects \
+  --validation-report ./runs/structured/validation_out/dataset_quality_report.json
+
 # CLI: validate a YOLO dataset
 agentic-mlops validate-dataset /path/to/dataset
 
@@ -136,7 +140,7 @@ This is a **sequential multi-agent MLOps pipeline** for YOLO object detection. A
 - `integrations/` — MLflow tracking hierarchy (see below) + model registry clients (Local/MLflow/Azure ML, see below); `azure_ml_client.py` only holds the SDK v2 `MLClient` factories (`DefaultAzureMLClientFactory` / `FakeAzureMLClientFactory`) — real Azure ML training/evaluation go through `tools/training_runner.py::AzureMLTrainingRunner` / `tools/evaluation_runner.py::AzureMLEvaluationRunner`, always injected by the CLI. `YoloTrainer`/`YoloEvaluator` raise a clear `RuntimeError` for `azure_train`/`azure_eval` mode if no runner was injected — there is no legacy fallback path anymore (removed 2026-07-10; it used to raise `NotImplementedError` via a now-deleted `AzureMLTrainingClient` stub)
 - `azure_jobs/` — entry scripts submitted to Azure ML as command jobs: `train_yolo.py` (training), `eval_yolo.py` (evaluation, writes `metrics.json` + plots). Both are self-contained (no `agentic_mlops` package import) since only this directory is uploaded as the job's code snapshot
 - `observability/` — JSON-line structured logging via `configure_logging()`; use `--json-logs` CLI flag; all modules use `get_logger(__name__)` with `extra=` for structured fields
-- `cli/main.py` — Typer app with ten commands: `data-intake`, `structure-dataset`, `pseudo-label`, `validate-dataset`, `label-qa`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`
+- `cli/main.py` — Typer app with eleven commands: `data-intake`, `structure-dataset`, `pseudo-label`, `validate-dataset`, `label-qa`, `version-dataset`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`
 
 ### Training and evaluation runners
 
@@ -261,6 +265,29 @@ split directories). CLI: `agentic-mlops label-qa <dataset_path> [--reference-mod
 Deliberately **not** wired into `run-mvp` — label QA is normally a one-off gate run after
 a (pseudo-)labeling pass, not part of every training run.
 
+### Dataset Versioning Agent (standalone, not part of MVPWorkflow)
+
+`DatasetVersioningAgent`/`LocalDatasetVersionRegistry` (`agents/dataset_versioning.py`,
+`integrations/dataset_registry.py`, `contracts/dataset_versioning.py`) — the fifth of the 8
+previously-unimplemented agents; mirrors `ModelRegistryAgent`/`LocalModelRegistryClient`'s
+local-registry pattern, but for datasets instead of trained models. The agent itself gates
+on `validation_report_path`/`label_quality_report_path` when given — either report's
+`status == "failed"` blocks registration (`status=blocked`), since the spec's whole point is
+registering a **clean** dataset. Content hash = SHA-256 over sorted `(relative_path,
+file_sha256)` pairs; if a new registration's hash matches an existing version's
+`lineage.json`, that version is returned instead of copying again (`status=deduplicated`,
+no new version) — satisfies the spec's "identical input hash shouldn't create redundant
+versions" rule. On an actual new version the full dataset tree is copied into
+`<registry_dir>/<name>/versions/<N>/dataset/` (same "registry owns an immutable copy"
+philosophy as `LocalModelRegistryClient` copying `best.pt`) alongside `lineage.json`
+(classes, hash, `parent_version`, `workflow_id`, `source_batches`, `approved_by`,
+validation/label-QA status). **Local filesystem backend only — Azure ML Data Asset
+registration is not implemented** (separately tracked in the backlog under Phase 2). CLI:
+`agentic-mlops version-dataset <dataset_path> --dataset-name ... [--validation-report ...]
+[--label-quality-report ...] [--parent-version ...]`. Writes `dataset_version_report.json`/
+`.md`. Deliberately **not** wired into `run-mvp` — same reasoning as the other Phase 0/3
+agents.
+
 ### MVPWorkflow factory injection
 
 `MVPWorkflow.__init__` accepts five `_xxx_factory: Callable[[Path], Agent] | None` parameters (`_validation_factory`, `_training_factory`, `_evaluation_factory`, `_approval_factory`, `_registry_factory`), each defaulting to a lambda that also injects MLflow when a parent run is active. This enables test overrides without any mock framework — pass a lambda returning a stub instead.
@@ -276,7 +303,7 @@ a (pseudo-)labeling pass, not part of every training run.
 ### Design documentation
 
 `agentic_mlops_workflow_docs/` contains the full agent and architecture specs:
-- `agents/` — 13 markdown specs (00–12) covering all planned agents, including the 4 not yet implemented (see below)
+- `agents/` — 13 markdown specs (00–12) covering all planned agents, including the 3 not yet implemented (see below)
 - `docs/` — 14 architecture docs (state machine, MVP scope, data contracts, etc.)
 - `prompts/` — Claude Code prompts used to bootstrap this project
 
@@ -291,7 +318,8 @@ status of every planned item). Still missing:
 - Azure ML pipeline components (multi-step AML pipeline instead of a single CommandJob per step)
 - Registering the dataset itself as an Azure ML Data Asset; storing artifacts in Blob/ADLS instead of local disk
 - VOC label format for Dataset Structuring (`LabelFormat` only has `yolo`/`coco`)
-- 4 remaining agents described in `agentic_mlops_workflow_docs/agents/` — Dataset Versioning, Model Decision (partially covered by `HumanApprovalAgent` + `PromotionPolicy`), Deployment, Monitoring. `LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, and `AnnotationAgent` (see above) are the first four of the original 8 to be implemented. These correspond to Phase 4/5 in the backlog — not started.
+- Azure ML Data Asset registration for `DatasetVersioningAgent` (local filesystem backend only)
+- 3 remaining agents described in `agentic_mlops_workflow_docs/agents/` — Model Decision (partially covered by `HumanApprovalAgent` + `PromotionPolicy`), Deployment, Monitoring. `LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, `AnnotationAgent`, and `DatasetVersioningAgent` (see above) are the first five of the original 8 to be implemented. These correspond to Phase 4/5 in the backlog — not started.
 
 Note: `agentic_mlops_workflow_docs/docs/` and `agentic_mlops_workflow_docs/agents/` are
 design specs frozen at the project-bootstrap stage — they describe the full target

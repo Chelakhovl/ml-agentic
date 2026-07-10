@@ -11,6 +11,7 @@ from agentic_mlops.contracts.annotation import AnnotationOutput
 from agentic_mlops.contracts.approvals import ApprovalOutput
 from agentic_mlops.contracts.data_intake import DataIntakeOutput
 from agentic_mlops.contracts.dataset_structuring import DatasetStructuringOutput
+from agentic_mlops.contracts.dataset_versioning import DatasetVersioningOutput
 from agentic_mlops.contracts.datasets import DatasetValidationOutput
 from agentic_mlops.contracts.evaluation import EvaluationOutput
 from agentic_mlops.contracts.label_qa import LabelQAOutput
@@ -205,6 +206,37 @@ class ReportWriter:
         )
         return json_path, md_path
 
+    def write_dataset_versioning_report(
+        self,
+        output: DatasetVersioningOutput,
+        artifacts_dir: Path,
+    ) -> tuple[Path, Path]:
+        """Write dataset_version_report.json and .md. Returns (json_path, md_path)."""
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        json_path = artifacts_dir / "dataset_version_report.json"
+        md_path = artifacts_dir / "dataset_version_report.md"
+
+        payload: dict[str, Any] = {
+            "generated_at": datetime.now(tz=UTC).isoformat(),
+            "success": output.success,
+            "status": output.status,
+            "dataset_name": output.dataset_name,
+            "version": output.version,
+            "dataset_version_path": output.dataset_version_path,
+            "hash": output.hash,
+            "lineage": output.lineage.model_dump(mode="json") if output.lineage else None,
+            "block_reason": output.block_reason,
+            "message": output.message,
+        }
+
+        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        md_path.write_text(_dataset_versioning_report_md(payload), encoding="utf-8")
+
+        logger.info(
+            "Dataset version report written", extra={"json": str(json_path), "md": str(md_path)}
+        )
+        return json_path, md_path
+
     def write_dataset_structuring_report(
         self,
         output: DatasetStructuringOutput,
@@ -393,6 +425,52 @@ def _annotation_report_md(report: dict[str, Any]) -> str:
         if len(review_records) > 200:
             lines.append(f"| ... | ... | ... | ... | {len(review_records) - 200} more not shown |")
         lines.append("")
+
+    lines.append(f"**Message:** {report['message']}")
+    return "\n".join(lines)
+
+
+def _dataset_versioning_report_md(report: dict[str, Any]) -> str:
+    status_label = str(report["status"]).upper()
+    lines = [
+        "# Dataset Version Report",
+        "",
+        f"**Status:** `{status_label}`  ",
+        f"**Generated:** {report['generated_at']}  ",
+        f"**Dataset:** {report['dataset_name'] or 'N/A'}  ",
+        f"**Version:** {report['version'] if report['version'] is not None else 'N/A'}  ",
+        f"**Hash:** `{report['hash'] or 'N/A'}`",
+        "",
+    ]
+
+    if report["block_reason"]:
+        lines += ["## Blocked", "", report["block_reason"], ""]
+
+    lineage = report["lineage"]
+    if lineage:
+        lines += [
+            "## Lineage",
+            "",
+            "| Field | Value |",
+            "|-------|-------|",
+            f"| Parent version | {lineage.get('parent_version') or 'N/A'} |",
+            f"| Workflow ID | {lineage.get('workflow_id') or 'N/A'} |",
+            f"| Approved by | {lineage.get('approved_by') or 'N/A'} |",
+            f"| Validation status | {lineage.get('validation_status') or 'N/A'} |",
+            f"| Label QA status | {lineage.get('label_qa_status') or 'N/A'} |",
+            f"| Registered at | {lineage.get('registered_at') or 'N/A'} |",
+            "",
+        ]
+        if lineage.get("classes"):
+            lines += ["## Classes", ""]
+            for i, cls in enumerate(lineage["classes"]):
+                lines.append(f"{i}. {cls}")
+            lines.append("")
+        if lineage.get("source_batches"):
+            lines += ["## Source Batches", ""]
+            for b in lineage["source_batches"]:
+                lines.append(f"- {b}")
+            lines.append("")
 
     lines.append(f"**Message:** {report['message']}")
     return "\n".join(lines)
