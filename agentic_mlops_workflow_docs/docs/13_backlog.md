@@ -1,6 +1,6 @@
 # Backlog
 
-> Statuses last verified 2026-07-10: 347/347 unit tests passing, `ruff check` clean.
+> Statuses last verified 2026-07-10: 372/372 unit tests passing, `ruff check` clean.
 
 ## Phase 0 — Data Ingestion
 
@@ -24,9 +24,10 @@ Structuring Agent → Dataset Validation Agent → ...`), not part of the origin
 - [x] Реализовать Evaluation Agent с mocked metrics для dry-run.
 - [x] Реализовать Decision Policy (`workflows/policies.py`).
 - [x] Реализовать Human Approval через CLI.
-- [x] Написать unit tests (347 tests across 16 files).
+- [x] Написать unit tests (372 tests across 17 files).
 - [x] Написать README с examples.
 - [x] Реализовать Model Registry Agent + local filesystem backend (pulled forward from Phase 4).
+- [x] Model Decision Agent (`agents/model_decision.py`, `tools/model_decider.py`) — was originally MVP step "4. Decision" per `01_mvp_scope.md`, but the actual implementation folded threshold checks directly into `EvaluationAgent` + `HumanApprovalAgent` instead of giving it a standalone agent; this backfills that as a genuinely additive step rather than duplicating existing logic. Reads `evaluation_report.json` (already produced by `EvaluationAgent`, which already ran `workflows.policies.evaluate_metrics_against_policy` — **not recomputed here**) and maps its 7-way `EvaluationRecommendation` onto the spec's 5-way `PROMOTE`/`REJECT`/`RETRAIN`/`NEED_MORE_DATA`/`NEED_LABEL_REVIEW`. Adds two checks that existed only as unused Pydantic fields nowhere else in the codebase until now: (1) **baseline comparison** — `PromotionPolicy.require_improvement_over_baseline`/`baseline_improvement_min_map50` (defined in `workflows/policies.py` since the MVP but never read by any code path); (2) **runtime budget** — `EvaluationConfig.runtime.max_latency_ms`/`max_model_size_mb` (defined in `contracts/evaluation.py` since the MVP, also never read anywhere). Either check failing downgrades a `PROMOTE` to `RETRAIN` (never the reverse, never further downgrades an already-non-PROMOTE decision). Does not benchmark inference itself — accepts an externally-measured `measured_latency_ms`. Never auto-approves anything — `HumanApprovalAgent` remains the sole approval gate. CLI: `agentic-mlops model-decision <evaluation_report_path> [--promotion-policy ...] [--evaluation-config ...] [--baseline-report ...] [--measured-latency-ms ...]` — standalone, not wired into `run-mvp`. Writes `decision_report.json`/`.md`.
 
 ## Phase 2 — Azure ML Integration
 

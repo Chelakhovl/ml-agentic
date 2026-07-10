@@ -15,6 +15,7 @@ from agentic_mlops.contracts.dataset_versioning import DatasetVersioningOutput
 from agentic_mlops.contracts.datasets import DatasetValidationOutput
 from agentic_mlops.contracts.evaluation import EvaluationOutput
 from agentic_mlops.contracts.label_qa import LabelQAOutput
+from agentic_mlops.contracts.model_decision import ModelDecisionOutput
 from agentic_mlops.contracts.training import TrainingOutput, training_mode_to_runner
 from agentic_mlops.contracts.workflows import MVPWorkflowOutput
 from agentic_mlops.observability.logging import get_logger
@@ -203,6 +204,41 @@ class ReportWriter:
 
         logger.info(
             "Pseudo-label report written", extra={"json": str(json_path), "md": str(md_path)}
+        )
+        return json_path, md_path
+
+    def write_model_decision_report(
+        self,
+        output: ModelDecisionOutput,
+        artifacts_dir: Path,
+    ) -> tuple[Path, Path]:
+        """Write decision_report.json and .md. Returns (json_path, md_path)."""
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        json_path = artifacts_dir / "decision_report.json"
+        md_path = artifacts_dir / "decision_report.md"
+
+        payload: dict[str, Any] = {
+            "generated_at": datetime.now(tz=UTC).isoformat(),
+            "success": output.success,
+            "decision": output.decision,
+            "required_approval_gate": output.required_approval_gate,
+            "reasons": output.reasons,
+            "passed_checks": output.passed_checks,
+            "failed_checks": output.failed_checks,
+            "metrics": output.metrics.model_dump() if output.metrics else None,
+            "baseline_metrics": (
+                output.baseline_metrics.model_dump() if output.baseline_metrics else None
+            ),
+            "map50_improvement": output.map50_improvement,
+            "model_size_mb": output.model_size_mb,
+            "message": output.message,
+        }
+
+        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        md_path.write_text(_model_decision_report_md(payload), encoding="utf-8")
+
+        logger.info(
+            "Model decision report written", extra={"json": str(json_path), "md": str(md_path)}
         )
         return json_path, md_path
 
@@ -424,6 +460,71 @@ def _annotation_report_md(report: dict[str, Any]) -> str:
             )
         if len(review_records) > 200:
             lines.append(f"| ... | ... | ... | ... | {len(review_records) - 200} more not shown |")
+        lines.append("")
+
+    lines.append(f"**Message:** {report['message']}")
+    return "\n".join(lines)
+
+
+def _model_decision_report_md(report: dict[str, Any]) -> str:
+    decision_label = str(report["decision"]).upper() if report["decision"] else "N/A"
+    lines = [
+        "# Model Decision Report",
+        "",
+        f"**Decision:** `{decision_label}`  ",
+        f"**Generated:** {report['generated_at']}  ",
+        f"**Required approval gate:** `{report['required_approval_gate']}`",
+        "",
+    ]
+
+    m = report.get("metrics")
+    if m:
+        lines += [
+            "## Candidate Metrics",
+            "",
+            "| Metric | Value |",
+            "|--------|-------|",
+            f"| mAP@0.5 | {m['map50']:.4f} |",
+            f"| mAP@0.5:0.95 | {m['map50_95']:.4f} |",
+            f"| Precision | {m['precision']:.4f} |",
+            f"| Recall | {m['recall']:.4f} |",
+            "",
+        ]
+
+    if report.get("baseline_metrics") is not None:
+        b = report["baseline_metrics"]
+        improvement = report.get("map50_improvement")
+        lines += [
+            "## Baseline Comparison",
+            "",
+            "| Metric | Baseline | Candidate | Δ mAP50 |",
+            "|--------|----------|-----------|---------|",
+            (
+                f"| mAP@0.5 | {b['map50']:.4f} | {m['map50']:.4f} | "
+                f"{improvement:+.4f} |"
+            ),
+            "",
+        ]
+
+    if report.get("model_size_mb") is not None:
+        lines += [f"**Model size:** {report['model_size_mb']:.1f} MB", ""]
+
+    if report["reasons"]:
+        lines += ["## Reasons", ""]
+        for r in report["reasons"]:
+            lines.append(f"- {r}")
+        lines.append("")
+
+    if report["passed_checks"]:
+        lines += ["## Passed Checks", ""]
+        for chk in report["passed_checks"]:
+            lines.append(f"- PASS {chk}")
+        lines.append("")
+
+    if report["failed_checks"]:
+        lines += ["## Failed Checks", ""]
+        for chk in report["failed_checks"]:
+            lines.append(f"- FAIL {chk}")
         lines.append("")
 
     lines.append(f"**Message:** {report['message']}")

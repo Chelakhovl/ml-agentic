@@ -536,6 +536,47 @@ def _print_dataset_versioning_result(result) -> None:  # type: ignore[type-arg]
             console.print(f"  [red]FAIL[/red] {err}")
 
 
+def _print_model_decision_result(result) -> None:  # type: ignore[type-arg]
+    status_color = {
+        "promote": "green",
+        "reject": "red",
+        "retrain": "yellow",
+        "need_more_data": "yellow",
+        "need_label_review": "yellow",
+    }.get(str(result.decision), "white")
+
+    label = str(result.decision).upper() if result.decision else "N/A"
+    console.print(f"\n[bold {status_color}]Model Decision: {label}[/bold {status_color}]")
+    console.print(f"Approval gate: {result.required_approval_gate}")
+
+    if result.metrics:
+        m = result.metrics
+        table = Table(title="Candidate Metrics", show_header=True)
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", justify="right")
+        table.add_row("mAP@0.5", f"{m.map50:.4f}")
+        table.add_row("mAP@0.5:0.95", f"{m.map50_95:.4f}")
+        table.add_row("Precision", f"{m.precision:.4f}")
+        table.add_row("Recall", f"{m.recall:.4f}")
+        console.print(table)
+
+    if result.map50_improvement is not None:
+        console.print(f"mAP50 vs baseline: {result.map50_improvement:+.4f}")
+
+    if result.reasons:
+        console.print("\n[bold]Reasons[/bold]")
+        for r in result.reasons:
+            console.print(f"  - {r}")
+
+    if result.errors:
+        console.print("\n[bold red]Errors[/bold red]")
+        for err in result.errors:
+            console.print(f"  [red]FAIL[/red] {err}")
+
+    if result.decision_report_path:
+        console.print(f"\nDecision report: [bold]{result.decision_report_path}[/bold]")
+
+
 @app.command("version-dataset")
 def version_dataset(
     dataset_path: str = typer.Argument(..., help="Path to a structured YOLO dataset"),
@@ -595,6 +636,58 @@ def version_dataset(
     )
 
     _print_dataset_versioning_result(result)
+
+    if not result.success:
+        raise typer.Exit(code=1)
+
+
+@app.command("model-decision")
+def model_decision(
+    evaluation_report: str = typer.Argument(..., help="Path to evaluation_report.json"),
+    promotion_policy: str = typer.Option(
+        None,
+        "--promotion-policy",
+        help="Path to promotion_policy.yaml (for baseline-improvement requirement)",
+    ),
+    evaluation_config: str = typer.Option(
+        None,
+        "--evaluation-config",
+        help="Path to evaluation config YAML (for max_latency_ms / max_model_size_mb)",
+    ),
+    baseline_report: str = typer.Option(
+        None,
+        "--baseline-report",
+        help="Path to a baseline evaluation_report.json to compare against",
+    ),
+    measured_latency_ms: float = typer.Option(
+        None, "--measured-latency-ms", help="Externally-measured inference latency, in ms"
+    ),
+    output_dir: str = typer.Option(
+        None,
+        "--output-dir",
+        help="Where to save the decision report (default: <evaluation_report dir>/decision_out)",
+    ),
+) -> None:
+    """Turn an evaluation report into an explainable promote/reject/retrain decision."""
+    from agentic_mlops.agents.model_decision import ModelDecisionAgent  # noqa: PLC0415
+    from agentic_mlops.contracts.model_decision import ModelDecisionInput  # noqa: PLC0415
+
+    artifacts_dir = (
+        Path(output_dir) if output_dir else Path(evaluation_report).parent / "decision_out"
+    )
+
+    agent = ModelDecisionAgent(artifacts_dir=artifacts_dir)
+    result = agent.run(
+        ModelDecisionInput(
+            evaluation_report_path=evaluation_report,
+            promotion_policy_path=promotion_policy,
+            evaluation_config_path=evaluation_config,
+            baseline_report_path=baseline_report,
+            measured_latency_ms=measured_latency_ms,
+        )
+    )
+
+    _print_model_decision_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)

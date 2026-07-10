@@ -46,6 +46,10 @@ agentic-mlops pseudo-label /path/to/unlabeled_images --model-path models/approve
 agentic-mlops version-dataset ./runs/structured --dataset-name factory_defects \
   --validation-report ./runs/structured/validation_out/dataset_quality_report.json
 
+# CLI: turn an evaluation report into an explainable promote/reject/retrain decision
+agentic-mlops model-decision ./runs/evaluation/evaluation_report.json \
+  --promotion-policy configs/promotion_policy.yaml --baseline-report ./baseline_eval/evaluation_report.json
+
 # CLI: validate a YOLO dataset
 agentic-mlops validate-dataset /path/to/dataset
 
@@ -140,7 +144,7 @@ This is a **sequential multi-agent MLOps pipeline** for YOLO object detection. A
 - `integrations/` — MLflow tracking hierarchy (see below) + model registry clients (Local/MLflow/Azure ML, see below); `azure_ml_client.py` only holds the SDK v2 `MLClient` factories (`DefaultAzureMLClientFactory` / `FakeAzureMLClientFactory`) — real Azure ML training/evaluation go through `tools/training_runner.py::AzureMLTrainingRunner` / `tools/evaluation_runner.py::AzureMLEvaluationRunner`, always injected by the CLI. `YoloTrainer`/`YoloEvaluator` raise a clear `RuntimeError` for `azure_train`/`azure_eval` mode if no runner was injected — there is no legacy fallback path anymore (removed 2026-07-10; it used to raise `NotImplementedError` via a now-deleted `AzureMLTrainingClient` stub)
 - `azure_jobs/` — entry scripts submitted to Azure ML as command jobs: `train_yolo.py` (training), `eval_yolo.py` (evaluation, writes `metrics.json` + plots). Both are self-contained (no `agentic_mlops` package import) since only this directory is uploaded as the job's code snapshot
 - `observability/` — JSON-line structured logging via `configure_logging()`; use `--json-logs` CLI flag; all modules use `get_logger(__name__)` with `extra=` for structured fields
-- `cli/main.py` — Typer app with eleven commands: `data-intake`, `structure-dataset`, `pseudo-label`, `validate-dataset`, `label-qa`, `version-dataset`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`
+- `cli/main.py` — Typer app with twelve commands: `data-intake`, `structure-dataset`, `pseudo-label`, `validate-dataset`, `label-qa`, `version-dataset`, `model-decision`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`
 
 ### Training and evaluation runners
 
@@ -288,6 +292,29 @@ registration is not implemented** (separately tracked in the backlog under Phase
 `.md`. Deliberately **not** wired into `run-mvp` — same reasoning as the other Phase 0/3
 agents.
 
+### Model Decision Agent (standalone, not part of MVPWorkflow)
+
+`ModelDecisionAgent`/`ModelDecider` (`agents/model_decision.py`, `tools/model_decider.py`,
+`contracts/model_decision.py`) — the sixth of the 8 previously-unimplemented agents. Was
+originally MVP step "4. Decision" per `01_mvp_scope.md`, but the actual implementation
+folded threshold checks directly into `EvaluationAgent` + `HumanApprovalAgent` instead of
+giving it a standalone agent; this backfills that gap **additively**, not by duplicating
+existing logic. Reads `evaluation_report.json` (`EvaluationAgent` already ran
+`workflows.policies.evaluate_metrics_against_policy` — **not recomputed here**) and maps
+its 7-way `EvaluationRecommendation` onto the spec's 5-way `PROMOTE`/`REJECT`/`RETRAIN`/
+`NEED_MORE_DATA`/`NEED_LABEL_REVIEW`. Adds two checks that existed only as unused Pydantic
+fields until now: **baseline comparison** (`PromotionPolicy.require_improvement_over_baseline`
+/`baseline_improvement_min_map50` — defined since the MVP, never read anywhere) and
+**runtime budget** (`EvaluationConfig.runtime.max_latency_ms`/`max_model_size_mb` — also
+defined since the MVP, also never read anywhere). Either check failing downgrades a
+`PROMOTE` to `RETRAIN` — never the reverse, and never further downgrades an already
+non-`PROMOTE` decision. Does not benchmark inference itself — accepts an externally
+measured `measured_latency_ms`. Never approves anything — `HumanApprovalAgent` remains
+the sole approval gate (matches the spec's "no auto-production-promote" rule). CLI:
+`agentic-mlops model-decision <evaluation_report_path> [--promotion-policy ...]
+[--evaluation-config ...] [--baseline-report ...] [--measured-latency-ms ...]`. Writes
+`decision_report.json`/`.md`. Deliberately **not** wired into `run-mvp`.
+
 ### MVPWorkflow factory injection
 
 `MVPWorkflow.__init__` accepts five `_xxx_factory: Callable[[Path], Agent] | None` parameters (`_validation_factory`, `_training_factory`, `_evaluation_factory`, `_approval_factory`, `_registry_factory`), each defaulting to a lambda that also injects MLflow when a parent run is active. This enables test overrides without any mock framework — pass a lambda returning a stub instead.
@@ -303,7 +330,7 @@ agents.
 ### Design documentation
 
 `agentic_mlops_workflow_docs/` contains the full agent and architecture specs:
-- `agents/` — 13 markdown specs (00–12) covering all planned agents, including the 3 not yet implemented (see below)
+- `agents/` — 13 markdown specs (00–12) covering all planned agents, including the 2 not yet implemented (see below)
 - `docs/` — 14 architecture docs (state machine, MVP scope, data contracts, etc.)
 - `prompts/` — Claude Code prompts used to bootstrap this project
 
@@ -319,7 +346,7 @@ status of every planned item). Still missing:
 - Registering the dataset itself as an Azure ML Data Asset; storing artifacts in Blob/ADLS instead of local disk
 - VOC label format for Dataset Structuring (`LabelFormat` only has `yolo`/`coco`)
 - Azure ML Data Asset registration for `DatasetVersioningAgent` (local filesystem backend only)
-- 3 remaining agents described in `agentic_mlops_workflow_docs/agents/` — Model Decision (partially covered by `HumanApprovalAgent` + `PromotionPolicy`), Deployment, Monitoring. `LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, `AnnotationAgent`, and `DatasetVersioningAgent` (see above) are the first five of the original 8 to be implemented. These correspond to Phase 4/5 in the backlog — not started.
+- 2 remaining agents described in `agentic_mlops_workflow_docs/agents/` — Deployment, Monitoring. `LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, `AnnotationAgent`, `DatasetVersioningAgent`, and `ModelDecisionAgent` (see above) are the first six of the original 8 to be implemented. These correspond to Phase 4/5 in the backlog — not started.
 
 Note: `agentic_mlops_workflow_docs/docs/` and `agentic_mlops_workflow_docs/agents/` are
 design specs frozen at the project-bootstrap stage — they describe the full target
