@@ -9,6 +9,7 @@ from typing import Any
 
 from agentic_mlops.contracts.approvals import ApprovalOutput
 from agentic_mlops.contracts.data_intake import DataIntakeOutput
+from agentic_mlops.contracts.dataset_structuring import DatasetStructuringOutput
 from agentic_mlops.contracts.datasets import DatasetValidationOutput
 from agentic_mlops.contracts.evaluation import EvaluationOutput
 from agentic_mlops.contracts.label_qa import LabelQAOutput
@@ -171,6 +172,39 @@ class ReportWriter:
         )
         return json_path, md_path
 
+    def write_dataset_structuring_report(
+        self,
+        output: DatasetStructuringOutput,
+        artifacts_dir: Path,
+    ) -> tuple[Path, Path]:
+        """Write split_report.json and .md. Returns (json_path, md_path)."""
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        json_path = artifacts_dir / "split_report.json"
+        md_path = artifacts_dir / "split_report.md"
+
+        payload: dict[str, Any] = {
+            "generated_at": datetime.now(tz=UTC).isoformat(),
+            "success": output.success,
+            "structured_dataset_path": output.structured_dataset_path,
+            "data_yaml_path": output.data_yaml_path,
+            "num_images": output.num_images,
+            "num_labels": output.num_labels,
+            "split_counts": output.split_counts,
+            "classes": output.classes,
+            "assignments": [a.model_dump() for a in output.assignments],
+            "warnings": output.warnings,
+            "message": output.message,
+        }
+
+        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        md_path.write_text(_dataset_structuring_report_md(payload), encoding="utf-8")
+
+        logger.info(
+            "Dataset structuring report written",
+            extra={"json": str(json_path), "md": str(md_path)},
+        )
+        return json_path, md_path
+
     def write_label_qa_report(
         self,
         output: LabelQAOutput,
@@ -277,6 +311,47 @@ def _dataset_report_md(report: dict[str, Any]) -> str:
         lines.append("")
 
     lines += [f"**Recommendation:** `{report['recommendation']}`", ""]
+    return "\n".join(lines)
+
+
+def _dataset_structuring_report_md(report: dict[str, Any]) -> str:
+    status_label = "SUCCESS" if report["success"] else "FAILED"
+    lines = [
+        "# Dataset Split Report",
+        "",
+        f"**Status:** `{status_label}`  ",
+        f"**Generated:** {report['generated_at']}  ",
+        f"**Structured dataset path:** `{report['structured_dataset_path'] or 'N/A'}`  ",
+        f"**data.yaml:** `{report['data_yaml_path'] or 'N/A'}`",
+        "",
+        "## Summary",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Images | {report['num_images']} |",
+        f"| Label files with objects | {report['num_labels']} |",
+        "",
+    ]
+
+    if report["split_counts"]:
+        lines += ["## Split Counts", "", "| Split | Count |", "|-------|-------|"]
+        for split, count in sorted(report["split_counts"].items()):
+            lines.append(f"| {split} | {count} |")
+        lines.append("")
+
+    if report["classes"]:
+        lines += ["## Classes", ""]
+        for i, cls in enumerate(report["classes"]):
+            lines.append(f"{i}. {cls}")
+        lines.append("")
+
+    if report["warnings"]:
+        lines += ["## Warnings", ""]
+        for w in report["warnings"]:
+            lines.append(f"- {w}")
+        lines.append("")
+
+    lines.append(f"**Message:** {report['message']}")
     return "\n".join(lines)
 
 

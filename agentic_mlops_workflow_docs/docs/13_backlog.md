@@ -1,6 +1,6 @@
 # Backlog
 
-> Statuses last verified 2026-07-10: 292/292 unit tests passing, `ruff check` clean.
+> Statuses last verified 2026-07-10: 311/311 unit tests passing, `ruff check` clean.
 
 ## Phase 0 — Data Ingestion
 
@@ -9,7 +9,7 @@ Structuring Agent → Dataset Validation Agent → ...`), not part of the origin
 
 - [x] Data Intake Agent (`agents/data_intake.py`, `tools/data_intake_scanner.py`) — scans a local raw image directory (no Azure Blob/ADLS client — local path only, consistent with the rest of this MVP), checks format against `expected_formats`, detects corrupted files (Pillow-based when available via the new `vision` extra — `pip install -e ".[vision]"` — falls back to a size-only sanity check otherwise, `pillow_available` reported in the manifest), SHA-256-hashes files to find duplicates. Status: `passed` / `needs_human_source_approval` (missing `source`, duplicate ratio over threshold, or unexpected-format files present) / `failed` (path not found, too few files, corrupted ratio over threshold). Standalone CLI (`agentic-mlops data-intake`) — not wired into `run-mvp`.
 - [x] Dataset manifest (`dataset_manifest.json`/`.md` — corrupted images and duplicate groups listed separately, matching the spec's acceptance criteria).
-- [ ] Dataset Structuring Agent (raw/curated → YOLO folder layout, COCO/VOC → YOLO label conversion, grouped train/val/test split that avoids video-frame leakage).
+- [x] Dataset Structuring Agent (`agents/dataset_structuring.py`, `tools/dataset_structurer.py`) — raw images (+ YOLO or COCO labels) → `images/{train,val,test}` + `labels/{train,val,test}` + valid `data.yaml`. COCO→YOLO bbox conversion (VOC not implemented — not started). `split_strategy=grouped_by_source` + `group_by_regex` keeps whole groups (e.g. all frames of one video) in a single split via a greedy largest-deficit balancer, avoiding the leakage the spec warns about; falls back to per-file grouping with a warning if no regex is given. `split_report.json`/`.md` (`agentic-mlops structure-dataset`) — standalone CLI, not wired into `run-mvp`, matching Data Intake / Label QA.
 
 ## Phase 1 — MVP
 
@@ -24,7 +24,7 @@ Structuring Agent → Dataset Validation Agent → ...`), not part of the origin
 - [x] Реализовать Evaluation Agent с mocked metrics для dry-run.
 - [x] Реализовать Decision Policy (`workflows/policies.py`).
 - [x] Реализовать Human Approval через CLI.
-- [x] Написать unit tests (292 tests across 13 files).
+- [x] Написать unit tests (311 tests across 14 files).
 - [x] Написать README с examples.
 - [x] Реализовать Model Registry Agent + local filesystem backend (pulled forward from Phase 4).
 

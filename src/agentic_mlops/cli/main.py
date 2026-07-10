@@ -152,6 +152,93 @@ def data_intake(
         raise typer.Exit(code=1)
 
 
+@app.command("structure-dataset")
+def structure_dataset(
+    raw_data_path: str = typer.Argument(..., help="Path to raw images (+ labels)"),
+    output_dataset_path: str = typer.Option(
+        ..., "--output-dataset-path", help="Where to write the structured YOLO dataset"
+    ),
+    classes: str = typer.Option(
+        ..., "--classes", help="Comma-separated ordered class list (defines data.yaml names)"
+    ),
+    label_format: str = typer.Option(
+        "yolo", "--label-format", help="Source label format: yolo | coco"
+    ),
+    coco_annotations: str = typer.Option(
+        None,
+        "--coco-annotations",
+        help="Path to a COCO annotations JSON file (required when --label-format coco)",
+    ),
+    split_strategy: str = typer.Option(
+        "random", "--split-strategy", help="Split strategy: random | grouped_by_source"
+    ),
+    train_ratio: float = typer.Option(0.8, "--train-ratio"),
+    val_ratio: float = typer.Option(0.1, "--val-ratio"),
+    test_ratio: float = typer.Option(0.1, "--test-ratio"),
+    group_by_regex: str = typer.Option(
+        None,
+        "--group-by-regex",
+        help="Regex with one capturing group to extract a source/video id from filenames "
+        "(used only with --split-strategy grouped_by_source)",
+    ),
+    seed: int = typer.Option(42, "--seed", help="Random seed for the split"),
+    output_dir: str = typer.Option(
+        None,
+        "--output-dir",
+        help="Where to save the split report (default: <output-dataset-path>/structuring_out)",
+    ),
+) -> None:
+    """Structure raw images (+ YOLO/COCO labels) into a split YOLO dataset."""
+    from agentic_mlops.agents.dataset_structuring import DatasetStructuringAgent  # noqa: PLC0415
+    from agentic_mlops.contracts.dataset_structuring import (  # noqa: PLC0415
+        DatasetStructuringInput,
+        LabelFormat,
+        SplitStrategy,
+    )
+
+    try:
+        parsed_format = LabelFormat(label_format)
+    except ValueError:
+        valid = ", ".join(f.value for f in LabelFormat)
+        console.print(f"[red]Invalid label-format '{label_format}'. Valid values: {valid}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        parsed_strategy = SplitStrategy(split_strategy)
+    except ValueError:
+        valid_s = ", ".join(s.value for s in SplitStrategy)
+        console.print(
+            f"[red]Invalid split-strategy '{split_strategy}'. Valid values: {valid_s}[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    artifacts_dir = (
+        Path(output_dir) if output_dir else Path(output_dataset_path) / "structuring_out"
+    )
+
+    agent = DatasetStructuringAgent(artifacts_dir=artifacts_dir)
+    result = agent.run(
+        DatasetStructuringInput(
+            raw_data_path=raw_data_path,
+            output_dataset_path=output_dataset_path,
+            classes=[c.strip() for c in classes.split(",") if c.strip()],
+            label_format=parsed_format,
+            coco_annotations_path=coco_annotations,
+            split_strategy=parsed_strategy,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            test_ratio=test_ratio,
+            group_by_regex=group_by_regex,
+            seed=seed,
+        )
+    )
+
+    _print_dataset_structuring_result(result)
+
+    if not result.success:
+        raise typer.Exit(code=1)
+
+
 @app.command("label-qa")
 def label_qa(
     dataset_path: str = typer.Argument(..., help="Path to the YOLO dataset root directory"),
@@ -232,6 +319,36 @@ def _print_data_intake_result(result) -> None:  # type: ignore[type-arg]
 
     if result.manifest_path:
         console.print(f"\nManifest saved to: [bold]{result.manifest_path}[/bold]")
+
+
+def _print_dataset_structuring_result(result) -> None:  # type: ignore[type-arg]
+    status_color = "green" if result.success else "red"
+    label = "SUCCESS" if result.success else "FAILED"
+    console.print(f"\n[bold {status_color}]Dataset Structuring: {label}[/bold {status_color}]")
+    console.print(f"Images: {result.num_images}  |  Labelled: {result.num_labels}")
+
+    if result.split_counts:
+        table = Table(title="Split Counts", show_header=True)
+        table.add_column("Split", style="cyan")
+        table.add_column("Count", justify="right")
+        for split, count in sorted(result.split_counts.items()):
+            table.add_row(split, str(count))
+        console.print(table)
+
+    if result.warnings:
+        console.print("\n[bold yellow]Warnings[/bold yellow]")
+        for w in result.warnings:
+            console.print(f"  [yellow]WARN[/yellow] {w}")
+
+    if result.errors:
+        console.print("\n[bold red]Errors[/bold red]")
+        for err in result.errors:
+            console.print(f"  [red]FAIL[/red] {err}")
+
+    if result.data_yaml_path:
+        console.print(f"\ndata.yaml: [bold]{result.data_yaml_path}[/bold]")
+    if result.split_report_path:
+        console.print(f"Split report: [bold]{result.split_report_path}[/bold]")
 
 
 def _print_validation_result(result) -> None:  # type: ignore[type-arg]
