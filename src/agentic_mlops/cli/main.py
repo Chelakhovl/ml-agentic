@@ -610,6 +610,46 @@ def _print_deployment_result(result) -> None:  # type: ignore[type-arg]
         console.print(f"\nDeployment report: [bold]{result.deployment_report_path}[/bold]")
 
 
+def _print_monitoring_result(result) -> None:  # type: ignore[type-arg]
+    status_color = {
+        "completed": "green",
+        "alerts_triggered": "yellow",
+        "failed": "red",
+    }.get(str(result.status), "white")
+
+    label = str(result.status).upper()
+    console.print(f"\n[bold {status_color}]Monitoring: {label}[/bold {status_color}]")
+    if result.endpoint_name:
+        console.print(f"Endpoint : {result.endpoint_name}")
+    console.print(f"Predictions in window: {result.total_predictions}")
+    console.print(f"Recommended action   : {result.recommended_action}")
+    console.print(f"Requires human review : {'yes' if result.requires_human_review else 'no'}")
+
+    if result.metrics:
+        table = Table(title="Metrics", show_header=True)
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", justify="right")
+        for k, v in result.metrics.items():
+            table.add_row(k, f"{v:.4f}")
+        console.print(table)
+
+    if result.triggered_alerts:
+        console.print("\n[bold yellow]Triggered Alerts[/bold yellow]")
+        for alert in result.triggered_alerts:
+            console.print(f"  - {alert}")
+
+    if result.hard_samples:
+        console.print(f"\nHard samples mined: {len(result.hard_samples)}")
+
+    if result.errors:
+        console.print("\n[bold red]Errors[/bold red]")
+        for err in result.errors:
+            console.print(f"  [red]FAIL[/red] {err}")
+
+    if result.monitoring_report_path:
+        console.print(f"\nMonitoring report: [bold]{result.monitoring_report_path}[/bold]")
+
+
 @app.command("version-dataset")
 def version_dataset(
     dataset_path: str = typer.Argument(..., help="Path to a structured YOLO dataset"),
@@ -810,6 +850,66 @@ def deploy_model(
     )
 
     _print_deployment_result(result)
+
+    if not result.success:
+        raise typer.Exit(code=1)
+
+
+@app.command("monitor")
+def monitor(
+    predictions_log: str = typer.Argument(
+        ..., help="Path to a JSON-Lines predictions log (one inference record per line)"
+    ),
+    endpoint_name: str = typer.Option(..., "--endpoint-name", help="Deployed endpoint name"),
+    model_version: str = typer.Option(
+        "", "--model-version", help="Deployed model version, if known"
+    ),
+    monitoring_window: str = typer.Option(
+        "24h", "--monitoring-window", help="Window ending at the log's latest timestamp: 24h/7d/30m"
+    ),
+    baseline_class_distribution: str = typer.Option(
+        None,
+        "--baseline-class-distribution",
+        help="Path to a JSON {class: count_or_proportion} baseline for drift detection",
+    ),
+    critical_classes: str = typer.Option(
+        None, "--critical-classes", help="Comma-separated classes to watch for representation drop"
+    ),
+    low_confidence_threshold: float = typer.Option(
+        0.5, "--low-confidence-threshold", help="Per-image weakest-detection floor for hard samples"
+    ),
+    output_dir: str = typer.Option(
+        None,
+        "--output-dir",
+        help="Where to save the monitoring report (default: <predictions-log dir>/monitoring_out)",
+    ),
+) -> None:
+    """Analyze a predictions log for drift/latency/confidence issues and recommend an action."""
+    from agentic_mlops.agents.monitoring import MonitoringAgent  # noqa: PLC0415
+    from agentic_mlops.contracts.monitoring import MonitoringInput  # noqa: PLC0415
+
+    artifacts_dir = (
+        Path(output_dir) if output_dir else Path(predictions_log).parent / "monitoring_out"
+    )
+
+    agent = MonitoringAgent(artifacts_dir=artifacts_dir)
+    result = agent.run(
+        MonitoringInput(
+            endpoint_name=endpoint_name,
+            model_version=model_version,
+            predictions_log_path=predictions_log,
+            monitoring_window=monitoring_window,
+            baseline_class_distribution_path=baseline_class_distribution,
+            critical_classes=(
+                [c.strip() for c in critical_classes.split(",") if c.strip()]
+                if critical_classes
+                else []
+            ),
+            low_confidence_threshold=low_confidence_threshold,
+        )
+    )
+
+    _print_monitoring_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)

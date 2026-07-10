@@ -1,6 +1,6 @@
 # Backlog
 
-> Statuses last verified 2026-07-10: 397/397 unit tests passing, `ruff check` clean.
+> Statuses last verified 2026-07-10: 419/419 unit tests passing, `ruff check` clean.
 
 ## Phase 0 — Data Ingestion
 
@@ -24,7 +24,7 @@ Structuring Agent → Dataset Validation Agent → ...`), not part of the origin
 - [x] Реализовать Evaluation Agent с mocked metrics для dry-run.
 - [x] Реализовать Decision Policy (`workflows/policies.py`).
 - [x] Реализовать Human Approval через CLI.
-- [x] Написать unit tests (397 tests across 18 files).
+- [x] Написать unit tests (419 tests across 19 files).
 - [x] Написать README с examples.
 - [x] Реализовать Model Registry Agent + local filesystem backend (pulled forward from Phase 4).
 - [x] Model Decision Agent (`agents/model_decision.py`, `tools/model_decider.py`) — was originally MVP step "4. Decision" per `01_mvp_scope.md`, but the actual implementation folded threshold checks directly into `EvaluationAgent` + `HumanApprovalAgent` instead of giving it a standalone agent; this backfills that as a genuinely additive step rather than duplicating existing logic. Reads `evaluation_report.json` (already produced by `EvaluationAgent`, which already ran `workflows.policies.evaluate_metrics_against_policy` — **not recomputed here**) and maps its 7-way `EvaluationRecommendation` onto the spec's 5-way `PROMOTE`/`REJECT`/`RETRAIN`/`NEED_MORE_DATA`/`NEED_LABEL_REVIEW`. Adds two checks that existed only as unused Pydantic fields nowhere else in the codebase until now: (1) **baseline comparison** — `PromotionPolicy.require_improvement_over_baseline`/`baseline_improvement_min_map50` (defined in `workflows/policies.py` since the MVP but never read by any code path); (2) **runtime budget** — `EvaluationConfig.runtime.max_latency_ms`/`max_model_size_mb` (defined in `contracts/evaluation.py` since the MVP, also never read anywhere). Either check failing downgrades a `PROMOTE` to `RETRAIN` (never the reverse, never further downgrades an already-non-PROMOTE decision). Does not benchmark inference itself — accepts an externally-measured `measured_latency_ms`. Never auto-approves anything — `HumanApprovalAgent` remains the sole approval gate. CLI: `agentic-mlops model-decision <evaluation_report_path> [--promotion-policy ...] [--evaluation-config ...] [--baseline-report ...] [--measured-latency-ms ...]` — standalone, not wired into `run-mvp`. Writes `decision_report.json`/`.md`.
@@ -66,12 +66,12 @@ Structuring Agent → Dataset Validation Agent → ...`), not part of the origin
 
 ## Phase 5 — Monitoring and Retraining
 
-- [ ] Monitoring Agent.
-- [ ] Azure Monitor integration.
-- [ ] Low-confidence sample collection.
-- [ ] Drift detection.
-- [ ] Hard sample dataset generation.
-- [ ] Retraining request workflow.
+- [x] Monitoring Agent (`agents/monitoring.py`, `tools/monitor.py::ModelMonitor`) — reads a local JSON-Lines predictions log (one inference record per line: `timestamp`, `image_id`, `latency_ms`, `error`, `detections: [{class, confidence}, ...]`) and computes error rate, p95 latency, low-confidence ratio, and (given a baseline) drift score / critical-class-drop / new-class detection. **No Azure Monitor / Application Insights integration exists** — same "standalone, no real infra" pattern as the Deployment Agent having no real serving infra; a real serving stack would need to export its logs to this same JSONL shape first. CLI: `agentic-mlops monitor <predictions_log> --endpoint-name ... [--baseline-class-distribution ... --critical-classes ...]` — standalone, not wired into `run-mvp`.
+- [ ] Azure Monitor / Application Insights integration (log ingestion is a local JSONL file only; no live endpoint metrics/traces).
+- [x] Low-confidence sample collection (`hard_samples_manifest.json` — an image is a hard sample if it has zero detections, or its *weakest* detection's confidence is below `low_confidence_threshold`, same "weakest detection decides" rule as the Annotation Agent's confidence buckets).
+- [x] Drift detection (`_drift_score()` — total variation distance between the current window's class distribution and a baseline `{class: count_or_proportion}` JSON; dependency-free, no scipy). Skipped entirely (`drift_score=0.0`) when no baseline is given.
+- [ ] Hard sample dataset generation (the manifest lists hard samples for a human to triage; it is not fed back into Data Intake / Dataset Structuring automatically — that hand-off is still a manual step).
+- [x] Retraining trigger thresholds from the spec's `triggers:` YAML block (`MonitoringThresholds`: `low_confidence_ratio`, `p95_latency_ms`, `critical_class_drop`, `drift_score`, `error_rate`) mapped to a `recommended_action` (`no_action` / `notify_ops` / `need_more_data` / `model_review` / `create_retraining_request`), highest-severity trigger wins when several fire at once (`critical_class_drop` > `drift_score` > `low_confidence_ratio` > latency/error). **Never triggers retraining itself — only recommends** (matches the "no auto-promote" rule every other agent in this codebase already follows); actually acting on `create_retraining_request` (looping back to Data Intake) remains a manual/human step.
 
 ## Future improvements
 

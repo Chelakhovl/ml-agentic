@@ -60,6 +60,10 @@ agentic-mlops deploy-model outputs/model_registry/my-model/versions/1/model/best
   --production-approval ./runs/approval/approval_decision.json \
   --rollback-plan "Revert traffic to previous release via current.json"
 
+# CLI: analyze a predictions log for drift/latency/confidence issues (standalone)
+agentic-mlops monitor ./logs/predictions.jsonl --endpoint-name factory-defects-prod \
+  --baseline-class-distribution ./baseline/class_distribution.json --critical-classes crack
+
 # CLI: validate a YOLO dataset
 agentic-mlops validate-dataset /path/to/dataset
 
@@ -154,7 +158,7 @@ This is a **sequential multi-agent MLOps pipeline** for YOLO object detection. A
 - `integrations/` — MLflow tracking hierarchy (see below) + model registry clients (Local/MLflow/Azure ML, see below); `azure_ml_client.py` only holds the SDK v2 `MLClient` factories (`DefaultAzureMLClientFactory` / `FakeAzureMLClientFactory`) — real Azure ML training/evaluation go through `tools/training_runner.py::AzureMLTrainingRunner` / `tools/evaluation_runner.py::AzureMLEvaluationRunner`, always injected by the CLI. `YoloTrainer`/`YoloEvaluator` raise a clear `RuntimeError` for `azure_train`/`azure_eval` mode if no runner was injected — there is no legacy fallback path anymore (removed 2026-07-10; it used to raise `NotImplementedError` via a now-deleted `AzureMLTrainingClient` stub)
 - `azure_jobs/` — entry scripts submitted to Azure ML as command jobs: `train_yolo.py` (training), `eval_yolo.py` (evaluation, writes `metrics.json` + plots). Both are self-contained (no `agentic_mlops` package import) since only this directory is uploaded as the job's code snapshot
 - `observability/` — JSON-line structured logging via `configure_logging()`; use `--json-logs` CLI flag; all modules use `get_logger(__name__)` with `extra=` for structured fields
-- `cli/main.py` — Typer app with thirteen commands: `data-intake`, `structure-dataset`, `pseudo-label`, `validate-dataset`, `label-qa`, `version-dataset`, `model-decision`, `deploy-model`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`
+- `cli/main.py` — Typer app with fourteen commands: `data-intake`, `structure-dataset`, `pseudo-label`, `validate-dataset`, `label-qa`, `version-dataset`, `model-decision`, `deploy-model`, `monitor`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`
 
 ### Training and evaluation runners
 
@@ -356,6 +360,51 @@ deployment. Never approves anything itself — the approval must already exist o
 --rollback-plan ... --production-approval ...] [--export-format onnx|pt]`. Writes
 `deployment_report.json`/`.md`. Deliberately **not** wired into `run-mvp`.
 
+### Monitoring Agent (standalone, not part of MVPWorkflow)
+
+`MonitoringAgent`/`ModelMonitor` (`agents/monitoring.py`, `tools/monitor.py`,
+`contracts/monitoring.py`) — the eighth and final of the 8 previously-unimplemented
+agents. **No Azure Monitor / Application Insights integration exists in this codebase**
+— same "standalone, no real infra" pattern as `DeploymentAgent` having no real serving
+infra. Monitoring here means reading a local JSON-Lines predictions log — the shape a
+real serving stack would eventually export from Azure Monitor/App Insights — one
+inference record per line: `{"timestamp": ..., "image_id": ..., "latency_ms": ...,
+"error": bool, "detections": [{"class": ..., "confidence": ...}, ...]}`.
+
+**Window filtering**: `monitoring_window` (e.g. `"24h"`, `"7d"`) ends at the *latest
+timestamp in the log*, not wall-clock now — keeps results deterministic for a fixed log
+file. Records with an unparsable timestamp are dropped with a warning rather than
+failing the whole run; a malformed JSON line is skipped the same way (mirrors Dataset
+Structuring's "skip and warn, don't hard-fail" convention).
+
+**Hard sample mining**: an image counts as a hard sample if it has zero detections, or
+its *weakest* detection's confidence is below `low_confidence_threshold` — the same
+"weakest detection decides" rule `ConfidenceThresholds` uses in the Annotation Agent.
+Written to `hard_samples_manifest.json` every run (empty list if none).
+
+**Drift detection**: given `baseline_class_distribution_path` (a JSON `{class:
+count_or_proportion}` snapshot, e.g. from a training dataset's class distribution),
+`drift_score` is the total variation distance between the current window's normalised
+class distribution and the baseline — `0.5 * sum(|current[c] - baseline[c]|)`, a
+dependency-free metric in `[0, 1]`. Skipped (`drift_score=0.0`) without a baseline.
+`critical_classes` adds a `critical_class_drop` check (max proportion drop for any named
+class) on top of the same baseline.
+
+**Triggers → `recommended_action`**: thresholds (`MonitoringThresholds`, mirroring the
+spec's `triggers:` YAML) map to `no_action` / `notify_ops` / `need_more_data` /
+`model_review` / `create_retraining_request`. When several fire at once, the
+highest-severity one wins: `critical_class_drop` (`model_review`) > `drift_score`
+(`create_retraining_request`) > `low_confidence_ratio` (`need_more_data`) >
+`p95_latency_ms`/`error_rate` (`notify_ops`). A newly-seen class alone sets
+`requires_human_review=True` without firing any numeric trigger. **Never triggers
+retraining itself — only recommends**, matching the "no auto-promote" rule every other
+agent in this codebase already follows; acting on `create_retraining_request` (looping
+back to Data Intake) stays a manual step. CLI: `agentic-mlops monitor
+<predictions_log_path> --endpoint-name ... [--baseline-class-distribution ...
+--critical-classes ...] [--monitoring-window 24h] [--low-confidence-threshold 0.5]`.
+Writes `monitoring_report.json`/`.md` + `hard_samples_manifest.json`. Deliberately
+**not** wired into `run-mvp`.
+
 ### MVPWorkflow factory injection
 
 `MVPWorkflow.__init__` accepts five `_xxx_factory: Callable[[Path], Agent] | None` parameters (`_validation_factory`, `_training_factory`, `_evaluation_factory`, `_approval_factory`, `_registry_factory`), each defaulting to a lambda that also injects MLflow when a parent run is active. This enables test overrides without any mock framework — pass a lambda returning a stub instead.
@@ -371,7 +420,7 @@ deployment. Never approves anything itself — the approval must already exist o
 ### Design documentation
 
 `agentic_mlops_workflow_docs/` contains the full agent and architecture specs:
-- `agents/` — 13 markdown specs (00–12) covering all planned agents, including the 1 not yet implemented (see below)
+- `agents/` — 13 markdown specs (00–12): 12 individual agent specs (01–12, all now implemented — see below) plus the top-level Orchestrator Agent spec (00, not implemented)
 - `docs/` — 14 architecture docs (state machine, MVP scope, data contracts, etc.)
 - `prompts/` — Claude Code prompts used to bootstrap this project
 
@@ -388,7 +437,8 @@ status of every planned item). Still missing:
 - VOC label format for Dataset Structuring (`LabelFormat` only has `yolo`/`coco`)
 - Azure ML Data Asset registration for `DatasetVersioningAgent` (local filesystem backend only)
 - Real serving infrastructure for `DeploymentAgent`: Docker image build, Azure ML Online Endpoint, AKS, CI/CD trigger — "deployment" is a local versioned release directory only, not live-traffic serving
-- 1 remaining agent described in `agentic_mlops_workflow_docs/agents/` — Monitoring. `LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, `AnnotationAgent`, `DatasetVersioningAgent`, `ModelDecisionAgent`, and `DeploymentAgent` (see above) are the first seven of the original 8 to be implemented. Monitoring corresponds to Phase 5 in the backlog — not started.
+- Azure Monitor / Application Insights integration for `MonitoringAgent` — log ingestion is a local JSONL file only, not live endpoint metrics/traces; hard samples are surfaced in a manifest for manual triage, not automatically fed back into Data Intake
+- All 8 originally-unimplemented agents (`LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, `AnnotationAgent`, `DatasetVersioningAgent`, `ModelDecisionAgent`, `DeploymentAgent`, `MonitoringAgent`) are now implemented. The one piece of `agentic_mlops_workflow_docs/agents/` still unimplemented is `00_orchestrator_agent.md` — a top-level orchestrator chaining all 12 sub-agents through the full state machine. `MVPWorkflow` only chains the original 5 MVP agents; the other 7 remain standalone CLI commands invoked manually, one at a time, rather than auto-routed by a state machine.
 
 Note: `agentic_mlops_workflow_docs/docs/` and `agentic_mlops_workflow_docs/agents/` are
 design specs frozen at the project-bootstrap stage — they describe the full target

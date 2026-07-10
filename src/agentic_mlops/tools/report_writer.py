@@ -17,6 +17,7 @@ from agentic_mlops.contracts.deployment import DeploymentOutput
 from agentic_mlops.contracts.evaluation import EvaluationOutput
 from agentic_mlops.contracts.label_qa import LabelQAOutput
 from agentic_mlops.contracts.model_decision import ModelDecisionOutput
+from agentic_mlops.contracts.monitoring import MonitoringOutput
 from agentic_mlops.contracts.training import TrainingOutput, training_mode_to_runner
 from agentic_mlops.contracts.workflows import MVPWorkflowOutput
 from agentic_mlops.observability.logging import get_logger
@@ -367,6 +368,46 @@ class ReportWriter:
         )
         return json_path, md_path
 
+    def write_monitoring_report(
+        self,
+        output: MonitoringOutput,
+        artifacts_dir: Path,
+    ) -> tuple[Path, Path]:
+        """Write monitoring_report.json and .md. Returns (json_path, md_path)."""
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        json_path = artifacts_dir / "monitoring_report.json"
+        md_path = artifacts_dir / "monitoring_report.md"
+
+        payload: dict[str, Any] = {
+            "generated_at": datetime.now(tz=UTC).isoformat(),
+            "success": output.success,
+            "status": output.status,
+            "endpoint_name": output.endpoint_name,
+            "model_version": output.model_version,
+            "window_start": output.window_start,
+            "window_end": output.window_end,
+            "total_predictions": output.total_predictions,
+            "metrics": output.metrics,
+            "class_distribution": output.class_distribution,
+            "drift_detected": output.drift_detected,
+            "new_classes_detected": output.new_classes_detected,
+            "triggered_alerts": output.triggered_alerts,
+            "recommended_action": output.recommended_action,
+            "requires_human_review": output.requires_human_review,
+            "hard_samples_manifest_path": output.hard_samples_manifest_path,
+            "num_hard_samples": len(output.hard_samples),
+            "warnings": output.warnings,
+            "message": output.message,
+        }
+
+        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        md_path.write_text(_monitoring_report_md(payload), encoding="utf-8")
+
+        logger.info(
+            "Monitoring report written", extra={"json": str(json_path), "md": str(md_path)}
+        )
+        return json_path, md_path
+
     def write_workflow_summary(
         self,
         output: MVPWorkflowOutput,
@@ -519,6 +560,64 @@ def _deployment_report_md(report: dict[str, Any]) -> str:
         lines += ["## Smoke Tests", ""]
         for chk in report["smoke_test_results"]:
             lines.append(f"- {chk}")
+        lines.append("")
+
+    lines.append(f"**Message:** {report['message']}")
+    return "\n".join(lines)
+
+
+def _monitoring_report_md(report: dict[str, Any]) -> str:
+    status_label = str(report["status"]).upper()
+    lines = [
+        "# Monitoring Report",
+        "",
+        f"**Status:** `{status_label}`  ",
+        f"**Generated:** {report['generated_at']}  ",
+        f"**Endpoint:** {report['endpoint_name'] or 'N/A'}  ",
+        f"**Model version:** {report['model_version'] or 'N/A'}  ",
+        f"**Window:** {report['window_start'] or 'N/A'} -> {report['window_end'] or 'N/A'}",
+        "",
+        "## Summary",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Predictions in window | {report['total_predictions']} |",
+        f"| Hard samples | {report['num_hard_samples']} |",
+        f"| Drift detected | {'yes' if report['drift_detected'] else 'no'} |",
+        f"| Requires human review | {'yes' if report['requires_human_review'] else 'no'} |",
+        f"| Recommended action | `{report['recommended_action']}` |",
+        "",
+    ]
+
+    m = report["metrics"]
+    if m:
+        lines += ["## Metrics", "", "| Metric | Value |", "|--------|-------|"]
+        for k, v in m.items():
+            lines.append(f"| {k} | {v:.4f} |")
+        lines.append("")
+
+    if report["class_distribution"]:
+        lines += ["## Class Distribution", "", "| Class | Proportion |", "|-------|------------|"]
+        for cls, prop in sorted(report["class_distribution"].items()):
+            lines.append(f"| {cls} | {prop:.2%} |")
+        lines.append("")
+
+    if report["new_classes_detected"]:
+        lines += ["## New Classes Detected", ""]
+        for cls in report["new_classes_detected"]:
+            lines.append(f"- {cls}")
+        lines.append("")
+
+    if report["triggered_alerts"]:
+        lines += ["## Triggered Alerts", ""]
+        for alert in report["triggered_alerts"]:
+            lines.append(f"- {alert}")
+        lines.append("")
+
+    if report["warnings"]:
+        lines += ["## Warnings", ""]
+        for w in report["warnings"]:
+            lines.append(f"- {w}")
         lines.append("")
 
     lines.append(f"**Message:** {report['message']}")
