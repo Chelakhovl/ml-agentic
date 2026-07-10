@@ -77,7 +77,7 @@ src/agentic_mlops/
   observability/    ← structured logging
   cli/              ← Typer CLI
 tests/
-  unit/             ← 254 tests across all agents, tools, and integrations
+  unit/             ← 275 tests across all agents, tools, and integrations
   conftest.py       ← shared fixtures
 configs/
   training.example.yaml
@@ -92,6 +92,7 @@ configs/
 | Command | Description |
 |---|---|
 | `validate-dataset` | Validate a YOLO dataset locally — no Azure needed |
+| `label-qa` | Check label quality (suspicious bbox geometry, class imbalance, optional reference-model disagreement) — standalone, not part of `run-mvp` |
 | `train` | Train a YOLO model: `fake` (dry-run plan) \| `local-yolo` (Ultralytics) \| `azure-ml` (Azure ML SDK v2) |
 | `evaluate` | Evaluate a model and apply the promotion policy: `fake` \| `local-yolo` \| `azure-ml` |
 | `approve` | Record a human approval decision (interactive or `--no-interactive --action ...`) |

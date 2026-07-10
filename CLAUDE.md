@@ -31,6 +31,10 @@ ruff format src tests
 # CLI: validate a YOLO dataset
 agentic-mlops validate-dataset /path/to/dataset
 
+# CLI: check label quality (standalone — not part of run-mvp)
+agentic-mlops label-qa /path/to/dataset
+agentic-mlops label-qa /path/to/dataset --reference-model models/approved/best.pt
+
 # CLI: train
 #   fake = write plan only; local-yolo = Ultralytics; azure-ml = Azure ML SDK
 agentic-mlops train --dataset-path /path/to/dataset --data-yaml /path/to/data.yaml \
@@ -118,7 +122,7 @@ This is a **sequential multi-agent MLOps pipeline** for YOLO object detection. A
 - `integrations/` — MLflow tracking hierarchy (see below) + model registry clients (Local/MLflow/Azure ML, see below); `azure_ml_client.py` only holds the SDK v2 `MLClient` factories (`DefaultAzureMLClientFactory` / `FakeAzureMLClientFactory`) — real Azure ML training/evaluation go through `tools/training_runner.py::AzureMLTrainingRunner` / `tools/evaluation_runner.py::AzureMLEvaluationRunner`, always injected by the CLI. `YoloTrainer`/`YoloEvaluator` raise a clear `RuntimeError` for `azure_train`/`azure_eval` mode if no runner was injected — there is no legacy fallback path anymore (removed 2026-07-10; it used to raise `NotImplementedError` via a now-deleted `AzureMLTrainingClient` stub)
 - `azure_jobs/` — entry scripts submitted to Azure ML as command jobs: `train_yolo.py` (training), `eval_yolo.py` (evaluation, writes `metrics.json` + plots). Both are self-contained (no `agentic_mlops` package import) since only this directory is uploaded as the job's code snapshot
 - `observability/` — JSON-line structured logging via `configure_logging()`; use `--json-logs` CLI flag; all modules use `get_logger(__name__)` with `extra=` for structured fields
-- `cli/main.py` — Typer app with six commands: `validate-dataset`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`
+- `cli/main.py` — Typer app with seven commands: `validate-dataset`, `label-qa`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`
 
 ### Training and evaluation runners
 
@@ -163,6 +167,23 @@ Three registry backends, all fully implemented in `integrations/model_registry.p
 
 **Backend routing nuance:** `ModelRegistryAgent` resolves its client via `create_registry_client(inp.backend)` when no `registry_client` is injected — this works for `local`/`mlflow` (both have everything they need in `ModelRegistrationInput`). `azure_ml` needs external connection info (subscription/resource group/workspace) that the input contract doesn't carry, so `create_registry_client()` raises a clear `ValueError` for it — the CLI (`register-model --backend azure_ml --azure-config ...`) builds `AzureMLModelRegistryClient(AzureMLConfig.from_yaml(...))` itself and injects it explicitly, same pattern as `train`/`evaluate --runner azure-ml`.
 
+### Label QA Agent (standalone, not part of MVPWorkflow)
+
+`LabelQAAgent`/`LabelQAChecker` (`agents/label_qa.py`, `tools/label_qa_checker.py`,
+`contracts/label_qa.py`) — the first of the 8 previously-unimplemented agents from
+`agentic_mlops_workflow_docs/agents/`. Checks label quality after (pseudo-)labeling;
+assumes the dataset already passed `DatasetValidationAgent` (does not repeat structural
+checks like malformed columns). Deterministic checks: bbox too small/large, near image
+boundary, suspicious aspect ratio, missing label file, class imbalance. Optional
+reference-model disagreement check (only runs if `reference_model_path` is given): loads
+a YOLO model, runs `.predict()` per image, greedy-IoU-matches predictions against human
+labels, flags unmatched high-confidence predictions as possible missing labels. Never
+modifies labels. Status: `passed` / `review_required` (suspicious count ≥
+`review_required_threshold`, default 5) / `failed` (structural — missing data.yaml, no
+split directories). CLI: `agentic-mlops label-qa <dataset_path> [--reference-model ...]`.
+Deliberately **not** wired into `run-mvp` — label QA is normally a one-off gate run after
+a (pseudo-)labeling pass, not part of every training run.
+
 ### MVPWorkflow factory injection
 
 `MVPWorkflow.__init__` accepts five `_xxx_factory: Callable[[Path], Agent] | None` parameters (`_validation_factory`, `_training_factory`, `_evaluation_factory`, `_approval_factory`, `_registry_factory`), each defaulting to a lambda that also injects MLflow when a parent run is active. This enables test overrides without any mock framework — pass a lambda returning a stub instead.
@@ -171,14 +192,14 @@ Three registry backends, all fully implemented in `integrations/model_registry.p
 
 - `conftest.py` exports plain helper functions (`make_valid_dataset`, `make_image`, `make_label`, `make_data_yaml`) — **not** `@pytest.fixture` decorated; tests import and call them directly with `tmp_path`
 - `make_image` writes a minimal JPEG stub (magic bytes + filename bytes + EOI) sufficient for hash-based duplicate detection
-- Azure/MLflow calls are replaced with `FakeAzureMLTrainingClient` / `FakeMLflowTrackingClient` / `FakeModelRegistryClient` injected via constructor
+- Azure/MLflow calls are replaced with `FakeAzureMLClientFactory` (+ `FakeMLClient`) / `FakeMLflowTrackingClient` / `FakeModelRegistryClient` injected via constructor
 - `MVPWorkflow` tests inject `_StubAgent` / `_RaisingAgent` factories — never use real agents in workflow tests
 - CLI is tested via `typer.testing.CliRunner`
 
 ### Design documentation
 
 `agentic_mlops_workflow_docs/` contains the full agent and architecture specs:
-- `agents/` — 13 markdown specs (00–12) covering all planned agents including the 8 not yet implemented
+- `agents/` — 13 markdown specs (00–12) covering all planned agents, including the 7 not yet implemented (see below)
 - `docs/` — 14 architecture docs (state machine, MVP scope, data contracts, etc.)
 - `prompts/` — Claude Code prompts used to bootstrap this project
 
@@ -192,8 +213,7 @@ status of every planned item). Still missing:
 
 - Azure ML pipeline components (multi-step AML pipeline instead of a single CommandJob per step)
 - Registering the dataset itself as an Azure ML Data Asset; storing artifacts in Blob/ADLS instead of local disk
-- 8 additional agents described in `agentic_mlops_workflow_docs/agents/` — Data Intake, Dataset Structuring, Annotation/Pseudo-label, Label QA, Dataset Versioning, Model Decision (partially covered by `HumanApprovalAgent` + `PromotionPolicy`), Deployment, Monitoring. These correspond to Phase 3 (labeling loop) and the rest of Phase 4/5 in the backlog — not started.
-- Repo hygiene: not yet a git repository (no version control), no CI workflow
+- 7 remaining agents described in `agentic_mlops_workflow_docs/agents/` — Data Intake, Dataset Structuring, Annotation/Pseudo-label, Dataset Versioning, Model Decision (partially covered by `HumanApprovalAgent` + `PromotionPolicy`), Deployment, Monitoring. `LabelQAAgent` (see above) is the first of the original 8 to be implemented. These correspond to the rest of Phase 3 (labeling loop) and Phase 4/5 in the backlog — not started.
 
 Note: `agentic_mlops_workflow_docs/docs/` and `agentic_mlops_workflow_docs/agents/` are
 design specs frozen at the project-bootstrap stage — they describe the full target

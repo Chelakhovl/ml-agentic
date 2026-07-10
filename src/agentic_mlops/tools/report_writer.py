@@ -10,6 +10,7 @@ from typing import Any
 from agentic_mlops.contracts.approvals import ApprovalOutput
 from agentic_mlops.contracts.datasets import DatasetValidationOutput
 from agentic_mlops.contracts.evaluation import EvaluationOutput
+from agentic_mlops.contracts.label_qa import LabelQAOutput
 from agentic_mlops.contracts.training import TrainingOutput, training_mode_to_runner
 from agentic_mlops.contracts.workflows import MVPWorkflowOutput
 from agentic_mlops.observability.logging import get_logger
@@ -136,6 +137,36 @@ class ReportWriter:
         return json_path, md_path
 
 
+    def write_label_qa_report(
+        self,
+        output: LabelQAOutput,
+        artifacts_dir: Path,
+    ) -> tuple[Path, Path]:
+        """Write label_quality_report.json and .md. Returns (json_path, md_path)."""
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        json_path = artifacts_dir / "label_quality_report.json"
+        md_path = artifacts_dir / "label_quality_report.md"
+
+        payload: dict[str, Any] = {
+            "generated_at": datetime.now(tz=UTC).isoformat(),
+            "status": output.status,
+            "label_quality_score": output.label_quality_score,
+            "num_images_checked": output.num_images_checked,
+            "num_labels_checked": output.num_labels_checked,
+            "reference_model_used": output.reference_model_used,
+            "class_distribution": output.class_distribution,
+            "suspicious_samples": [s.model_dump() for s in output.suspicious_samples],
+            "message": output.message,
+        }
+
+        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        md_path.write_text(_label_qa_report_md(payload), encoding="utf-8")
+
+        logger.info(
+            "Label QA report written", extra={"json": str(json_path), "md": str(md_path)}
+        )
+        return json_path, md_path
+
     def write_workflow_summary(
         self,
         output: MVPWorkflowOutput,
@@ -212,6 +243,50 @@ def _dataset_report_md(report: dict[str, Any]) -> str:
         lines.append("")
 
     lines += [f"**Recommendation:** `{report['recommendation']}`", ""]
+    return "\n".join(lines)
+
+
+def _label_qa_report_md(report: dict[str, Any]) -> str:
+    samples = report["suspicious_samples"]
+    lines = [
+        "# Label Quality Report",
+        "",
+        f"**Status:** `{report['status'].upper()}`  ",
+        f"**Generated:** {report['generated_at']}  ",
+        f"**Quality score:** {report['label_quality_score']:.4f}  ",
+        f"**Reference model used:** {'yes' if report['reference_model_used'] else 'no'}",
+        "",
+        "## Summary",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Images checked | {report['num_images_checked']} |",
+        f"| Label files checked | {report['num_labels_checked']} |",
+        f"| Suspicious samples | {len(samples)} |",
+        "",
+    ]
+
+    if report["class_distribution"]:
+        lines += ["## Class Distribution", "", "| Class | Count |", "|-------|-------|"]
+        total = sum(report["class_distribution"].values())
+        for cls, count in sorted(report["class_distribution"].items()):
+            pct = count / total * 100 if total else 0
+            lines.append(f"| {cls} | {count} ({pct:.1f}%) |")
+        lines.append("")
+
+    if samples:
+        lines += ["## Suspicious Samples", "", "| Image | Split | Issue | Message |",
+                   "|-------|-------|-------|---------|"]
+        for s in samples[:200]:  # keep the report readable for large datasets
+            lines.append(
+                f"| {s['image'] or 'N/A'} | {s['split'] or 'N/A'} "
+                f"| {s['issue_type']} | {s['message']} |"
+            )
+        if len(samples) > 200:
+            lines.append(f"| ... | ... | ... | {len(samples) - 200} more not shown |")
+        lines.append("")
+
+    lines.append(f"**Message:** {report['message']}")
     return "\n".join(lines)
 
 

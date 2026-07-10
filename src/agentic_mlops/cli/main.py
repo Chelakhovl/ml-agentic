@@ -101,6 +101,50 @@ def validate_dataset(
         raise typer.Exit(code=1)
 
 
+@app.command("label-qa")
+def label_qa(
+    dataset_path: str = typer.Argument(..., help="Path to the YOLO dataset root directory"),
+    data_yaml: str = typer.Option(None, "--data-yaml", help="Override path to data.yaml"),
+    output_dir: str = typer.Option(
+        None, "--output-dir", help="Where to save reports (default: <dataset_path>/label_qa_out)"
+    ),
+    reference_model: str = typer.Option(
+        None,
+        "--reference-model",
+        help="Path to a reference YOLO model (.pt) — enables the disagreement check",
+    ),
+    reference_model_confidence: float = typer.Option(
+        0.25, "--reference-model-confidence", help="Confidence threshold for the reference model"
+    ),
+    review_required_threshold: int = typer.Option(
+        5,
+        "--review-required-threshold",
+        help="Suspicious sample count that flips status from passed to review_required",
+    ),
+) -> None:
+    """Check label quality on a YOLO dataset and write a suspicious-samples report."""
+    from agentic_mlops.agents.label_qa import LabelQAAgent  # noqa: PLC0415
+    from agentic_mlops.contracts.label_qa import LabelQAInput  # noqa: PLC0415
+
+    artifacts_dir = Path(output_dir) if output_dir else Path(dataset_path) / "label_qa_out"
+
+    agent = LabelQAAgent(artifacts_dir=artifacts_dir)
+    result = agent.run(
+        LabelQAInput(
+            dataset_path=dataset_path,
+            data_yaml_path=data_yaml,
+            reference_model_path=reference_model,
+            reference_model_confidence=reference_model_confidence,
+            review_required_threshold=review_required_threshold,
+        )
+    )
+
+    _print_label_qa_result(result)
+
+    if not result.success or result.status == "review_required":
+        raise typer.Exit(code=1)
+
+
 # ── Pretty-print helpers ───────────────────────────────────────────────────────
 
 
@@ -136,6 +180,41 @@ def _print_validation_result(result) -> None:  # type: ignore[type-arg]
             pct = count / total * 100 if total else 0
             table.add_row(cls, str(count), f"{pct:.1f}%")
         console.print(table)
+
+    if result.report_path:
+        console.print(f"\nReport saved to: [bold]{result.report_path}[/bold]")
+
+
+def _print_label_qa_result(result) -> None:  # type: ignore[type-arg]
+    status_color = {
+        "passed": "green",
+        "review_required": "yellow",
+        "failed": "red",
+    }.get(str(result.status), "white")
+
+    console.print(
+        f"\n[bold {status_color}]Label QA: {str(result.status).upper()}[/bold {status_color}]"
+    )
+    console.print(
+        f"Images: {result.num_images_checked}  |  Labels: {result.num_labels_checked}  |  "
+        f"Quality score: {result.label_quality_score:.4f}"
+    )
+
+    if result.suspicious_samples:
+        table = Table(title="Suspicious Samples", show_header=True)
+        table.add_column("Image", style="cyan")
+        table.add_column("Split")
+        table.add_column("Issue")
+        for s in result.suspicious_samples[:50]:
+            table.add_row(s.image or "N/A", s.split or "N/A", str(s.issue_type))
+        console.print(table)
+        if len(result.suspicious_samples) > 50:
+            console.print(f"  ... {len(result.suspicious_samples) - 50} more not shown")
+
+    if result.errors:
+        console.print("\n[bold red]Errors[/bold red]")
+        for err in result.errors:
+            console.print(f"  [red]FAIL[/red] {err}")
 
     if result.report_path:
         console.print(f"\nReport saved to: [bold]{result.report_path}[/bold]")

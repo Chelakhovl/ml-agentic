@@ -1,6 +1,6 @@
 # Backlog
 
-> Statuses last verified 2026-07-10: 254/254 unit tests passing, `ruff check` clean.
+> Statuses last verified 2026-07-10: 275/275 unit tests passing, `ruff check` clean.
 
 ## Phase 1 — MVP
 
@@ -37,8 +37,8 @@
 - [ ] Annotation / Pseudo-label Agent.
 - [ ] YOLO predict tool.
 - [ ] Confidence routing.
-- [ ] Label QA Agent.
-- [ ] Suspicious labels report.
+- [x] Label QA Agent (`agents/label_qa.py`, `tools/label_qa_checker.py`) — deterministic geometric/statistical checks (too small/large bbox, near-boundary, aspect ratio, missing label file, class imbalance) plus an optional reference-model disagreement check (IoU-matched against a YOLO model's predictions when `reference_model_path` is given). Standalone CLI (`agentic-mlops label-qa`) — not wired into `run-mvp`, since QA is normally a one-off gate after (pseudo-)labeling, not part of every training run. Never modifies labels.
+- [x] Suspicious labels report (`label_quality_report.json`/`.md`, status `passed`/`review_required`/`failed`).
 - [ ] Integration with CVAT / Label Studio / Azure ML Data Labeling.
 
 ## Phase 4 — Registry and Deployment
