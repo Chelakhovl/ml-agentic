@@ -577,6 +577,39 @@ def _print_model_decision_result(result) -> None:  # type: ignore[type-arg]
         console.print(f"\nDecision report: [bold]{result.decision_report_path}[/bold]")
 
 
+def _print_deployment_result(result) -> None:  # type: ignore[type-arg]
+    status_color = {
+        "deployed_to_staging": "green",
+        "deployed_to_production": "green",
+        "blocked": "yellow",
+        "failed": "red",
+    }.get(str(result.status), "white")
+
+    label = str(result.status).upper()
+    console.print(f"\n[bold {status_color}]Deployment: {label}[/bold {status_color}]")
+    if result.endpoint_name:
+        console.print(f"Endpoint : {result.endpoint_name}")
+    if result.release is not None:
+        console.print(f"Release  : {result.release}")
+    if result.exported_model_path:
+        console.print(f"Exported : [bold]{result.exported_model_path}[/bold]")
+
+    if result.smoke_test_results:
+        console.print("\n[bold]Smoke Tests[/bold]")
+        for chk in result.smoke_test_results:
+            console.print(f"  - {chk}")
+
+    if result.block_reason:
+        console.print(f"\n[yellow]Blocked: {result.block_reason}[/yellow]")
+    if result.errors:
+        console.print("\n[bold red]Errors[/bold red]")
+        for err in result.errors:
+            console.print(f"  [red]FAIL[/red] {err}")
+
+    if result.deployment_report_path:
+        console.print(f"\nDeployment report: [bold]{result.deployment_report_path}[/bold]")
+
+
 @app.command("version-dataset")
 def version_dataset(
     dataset_path: str = typer.Argument(..., help="Path to a structured YOLO dataset"),
@@ -688,6 +721,95 @@ def model_decision(
     )
 
     _print_model_decision_result(result)
+
+    if not result.success:
+        raise typer.Exit(code=1)
+
+
+@app.command("deploy-model")
+def deploy_model(
+    model_path: str = typer.Argument(
+        ..., help="Path to a registered model's weights (best.pt)"
+    ),
+    model_name: str = typer.Option(
+        ..., "--model-name", help="Model name for the deployment record"
+    ),
+    model_version: int = typer.Option(
+        None, "--model-version", help="Registered model version, if known"
+    ),
+    target: str = typer.Option(
+        "staging", "--target", help="Deployment target: staging | production"
+    ),
+    export_format: str = typer.Option(
+        "onnx",
+        "--export-format",
+        help="Export format: onnx (requires the onnx package) | pt (passthrough)",
+    ),
+    deployment_dir: str = typer.Option(
+        "outputs/deployments", "--deployment-dir", help="Root of the local deployment registry"
+    ),
+    endpoint_name: str = typer.Option(
+        None, "--endpoint-name", help="Endpoint name (default: <model-name>-<target>)"
+    ),
+    production_approval: str = typer.Option(
+        None,
+        "--production-approval",
+        help=(
+            "Path to an approval_decision.json with status='approved' — "
+            "required for --target production"
+        ),
+    ),
+    rollback_plan: str = typer.Option(
+        None, "--rollback-plan", help="Rollback plan text — required for --target production"
+    ),
+    output_dir: str = typer.Option(
+        None,
+        "--output-dir",
+        help="Where to save the deployment report (default: <deployment-dir>/deploy_out)",
+    ),
+) -> None:
+    """Export, smoke-test, and deploy a registered model to staging or production."""
+    from agentic_mlops.agents.deployment import DeploymentAgent  # noqa: PLC0415
+    from agentic_mlops.contracts.deployment import (  # noqa: PLC0415
+        DeploymentInput,
+        DeploymentTarget,
+        ExportFormat,
+    )
+
+    try:
+        parsed_target = DeploymentTarget(target)
+    except ValueError:
+        valid = ", ".join(t.value for t in DeploymentTarget)
+        console.print(f"[red]Invalid target '{target}'. Valid values: {valid}[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        parsed_format = ExportFormat(export_format)
+    except ValueError:
+        valid_f = ", ".join(f.value for f in ExportFormat)
+        console.print(
+            f"[red]Invalid export-format '{export_format}'. Valid values: {valid_f}[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    artifacts_dir = Path(output_dir) if output_dir else Path(deployment_dir) / "deploy_out"
+
+    agent = DeploymentAgent(artifacts_dir=artifacts_dir)
+    result = agent.run(
+        DeploymentInput(
+            model_path=model_path,
+            model_name=model_name,
+            model_version=model_version,
+            target=parsed_target,
+            export_format=parsed_format,
+            deployment_dir=deployment_dir,
+            endpoint_name=endpoint_name,
+            production_approval_path=production_approval,
+            rollback_plan=rollback_plan,
+        )
+    )
+
+    _print_deployment_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)

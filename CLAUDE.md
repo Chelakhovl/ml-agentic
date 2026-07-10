@@ -50,6 +50,16 @@ agentic-mlops version-dataset ./runs/structured --dataset-name factory_defects \
 agentic-mlops model-decision ./runs/evaluation/evaluation_report.json \
   --promotion-policy configs/promotion_policy.yaml --baseline-report ./baseline_eval/evaluation_report.json
 
+# CLI: export + smoke-test + deploy a registered model to a local staging release (standalone)
+agentic-mlops deploy-model outputs/model_registry/my-model/versions/1/model/best.pt \
+  --model-name my-model --export-format onnx
+
+# CLI: deploy to production (requires an approved H6 gate + rollback plan)
+agentic-mlops deploy-model outputs/model_registry/my-model/versions/1/model/best.pt \
+  --model-name my-model --target production --export-format onnx \
+  --production-approval ./runs/approval/approval_decision.json \
+  --rollback-plan "Revert traffic to previous release via current.json"
+
 # CLI: validate a YOLO dataset
 agentic-mlops validate-dataset /path/to/dataset
 
@@ -144,7 +154,7 @@ This is a **sequential multi-agent MLOps pipeline** for YOLO object detection. A
 - `integrations/` — MLflow tracking hierarchy (see below) + model registry clients (Local/MLflow/Azure ML, see below); `azure_ml_client.py` only holds the SDK v2 `MLClient` factories (`DefaultAzureMLClientFactory` / `FakeAzureMLClientFactory`) — real Azure ML training/evaluation go through `tools/training_runner.py::AzureMLTrainingRunner` / `tools/evaluation_runner.py::AzureMLEvaluationRunner`, always injected by the CLI. `YoloTrainer`/`YoloEvaluator` raise a clear `RuntimeError` for `azure_train`/`azure_eval` mode if no runner was injected — there is no legacy fallback path anymore (removed 2026-07-10; it used to raise `NotImplementedError` via a now-deleted `AzureMLTrainingClient` stub)
 - `azure_jobs/` — entry scripts submitted to Azure ML as command jobs: `train_yolo.py` (training), `eval_yolo.py` (evaluation, writes `metrics.json` + plots). Both are self-contained (no `agentic_mlops` package import) since only this directory is uploaded as the job's code snapshot
 - `observability/` — JSON-line structured logging via `configure_logging()`; use `--json-logs` CLI flag; all modules use `get_logger(__name__)` with `extra=` for structured fields
-- `cli/main.py` — Typer app with twelve commands: `data-intake`, `structure-dataset`, `pseudo-label`, `validate-dataset`, `label-qa`, `version-dataset`, `model-decision`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`
+- `cli/main.py` — Typer app with thirteen commands: `data-intake`, `structure-dataset`, `pseudo-label`, `validate-dataset`, `label-qa`, `version-dataset`, `model-decision`, `deploy-model`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`
 
 ### Training and evaluation runners
 
@@ -315,6 +325,37 @@ the sole approval gate (matches the spec's "no auto-production-promote" rule). C
 [--evaluation-config ...] [--baseline-report ...] [--measured-latency-ms ...]`. Writes
 `decision_report.json`/`.md`. Deliberately **not** wired into `run-mvp`.
 
+### Deployment Agent (standalone, not part of MVPWorkflow)
+
+`DeploymentAgent`/`ModelDeployer` (`agents/deployment.py`, `tools/deployer.py`,
+`contracts/deployment.py`) — the seventh of the 8 previously-unimplemented agents.
+**No real serving infrastructure exists in this codebase** — there is no Docker image
+build, no Azure ML Online Endpoint client, no AKS, no CI/CD trigger (all explicitly out
+of scope; the spec's Docker/AKS/CI-CD tooling is not started). "Deploying" here means:
+export → smoke test → write a versioned release to `<deployment_dir>/<endpoint_name>/`,
+mirroring the exact same "N-th release + `current.json`" pattern already used by
+`LocalModelRegistryClient` and `LocalDatasetVersionRegistry` — not serving live traffic.
+
+**Export** (`ModelExporter`): `onnx` (real `ultralytics` `.export(format="onnx")`, soft
+dependency on the separate `onnx` package for structural validation) or `pt` (passthrough
+copy, no dependency at all — useful for local-only serving or testing without either
+package installed). **Smoke tests**: exported file exists and is non-empty; for `onnx`,
+`onnx.checker.check_model()` runs when the `onnx` package is installed, otherwise skipped
+with a best-effort note rather than failing. A failed smoke test removes the partial
+release directory.
+
+**Safety gates**: staging is semi-automatic — deploys once smoke tests pass, no human
+gate (per spec). `target=production` requires **both** a non-empty `rollback_plan` and a
+`production_approval_path` JSON with `status="approved"` (same shape as
+`approval_decision.json`, same gate style `ModelRegistryAgent` already checks) — missing
+either blocks (`status=blocked`) before any export happens, so a bad production request
+never even touches disk. `current.json` is written only after a fully successful
+deployment. Never approves anything itself — the approval must already exist on disk
+(H6 gate), matching every other "no auto-promote" rule in this codebase. CLI:
+`agentic-mlops deploy-model <model_path> --model-name ... [--target production
+--rollback-plan ... --production-approval ...] [--export-format onnx|pt]`. Writes
+`deployment_report.json`/`.md`. Deliberately **not** wired into `run-mvp`.
+
 ### MVPWorkflow factory injection
 
 `MVPWorkflow.__init__` accepts five `_xxx_factory: Callable[[Path], Agent] | None` parameters (`_validation_factory`, `_training_factory`, `_evaluation_factory`, `_approval_factory`, `_registry_factory`), each defaulting to a lambda that also injects MLflow when a parent run is active. This enables test overrides without any mock framework — pass a lambda returning a stub instead.
@@ -330,7 +371,7 @@ the sole approval gate (matches the spec's "no auto-production-promote" rule). C
 ### Design documentation
 
 `agentic_mlops_workflow_docs/` contains the full agent and architecture specs:
-- `agents/` — 13 markdown specs (00–12) covering all planned agents, including the 2 not yet implemented (see below)
+- `agents/` — 13 markdown specs (00–12) covering all planned agents, including the 1 not yet implemented (see below)
 - `docs/` — 14 architecture docs (state machine, MVP scope, data contracts, etc.)
 - `prompts/` — Claude Code prompts used to bootstrap this project
 
@@ -346,7 +387,8 @@ status of every planned item). Still missing:
 - Registering the dataset itself as an Azure ML Data Asset; storing artifacts in Blob/ADLS instead of local disk
 - VOC label format for Dataset Structuring (`LabelFormat` only has `yolo`/`coco`)
 - Azure ML Data Asset registration for `DatasetVersioningAgent` (local filesystem backend only)
-- 2 remaining agents described in `agentic_mlops_workflow_docs/agents/` — Deployment, Monitoring. `LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, `AnnotationAgent`, `DatasetVersioningAgent`, and `ModelDecisionAgent` (see above) are the first six of the original 8 to be implemented. These correspond to Phase 4/5 in the backlog — not started.
+- Real serving infrastructure for `DeploymentAgent`: Docker image build, Azure ML Online Endpoint, AKS, CI/CD trigger — "deployment" is a local versioned release directory only, not live-traffic serving
+- 1 remaining agent described in `agentic_mlops_workflow_docs/agents/` — Monitoring. `LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, `AnnotationAgent`, `DatasetVersioningAgent`, `ModelDecisionAgent`, and `DeploymentAgent` (see above) are the first seven of the original 8 to be implemented. Monitoring corresponds to Phase 5 in the backlog — not started.
 
 Note: `agentic_mlops_workflow_docs/docs/` and `agentic_mlops_workflow_docs/agents/` are
 design specs frozen at the project-bootstrap stage — they describe the full target

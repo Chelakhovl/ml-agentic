@@ -1,6 +1,6 @@
 # Backlog
 
-> Statuses last verified 2026-07-10: 372/372 unit tests passing, `ruff check` clean.
+> Statuses last verified 2026-07-10: 397/397 unit tests passing, `ruff check` clean.
 
 ## Phase 0 — Data Ingestion
 
@@ -24,7 +24,7 @@ Structuring Agent → Dataset Validation Agent → ...`), not part of the origin
 - [x] Реализовать Evaluation Agent с mocked metrics для dry-run.
 - [x] Реализовать Decision Policy (`workflows/policies.py`).
 - [x] Реализовать Human Approval через CLI.
-- [x] Написать unit tests (372 tests across 17 files).
+- [x] Написать unit tests (397 tests across 18 files).
 - [x] Написать README с examples.
 - [x] Реализовать Model Registry Agent + local filesystem backend (pulled forward from Phase 4).
 - [x] Model Decision Agent (`agents/model_decision.py`, `tools/model_decider.py`) — was originally MVP step "4. Decision" per `01_mvp_scope.md`, but the actual implementation folded threshold checks directly into `EvaluationAgent` + `HumanApprovalAgent` instead of giving it a standalone agent; this backfills that as a genuinely additive step rather than duplicating existing logic. Reads `evaluation_report.json` (already produced by `EvaluationAgent`, which already ran `workflows.policies.evaluate_metrics_against_policy` — **not recomputed here**) and maps its 7-way `EvaluationRecommendation` onto the spec's 5-way `PROMOTE`/`REJECT`/`RETRAIN`/`NEED_MORE_DATA`/`NEED_LABEL_REVIEW`. Adds two checks that existed only as unused Pydantic fields nowhere else in the codebase until now: (1) **baseline comparison** — `PromotionPolicy.require_improvement_over_baseline`/`baseline_improvement_min_map50` (defined in `workflows/policies.py` since the MVP but never read by any code path); (2) **runtime budget** — `EvaluationConfig.runtime.max_latency_ms`/`max_model_size_mb` (defined in `contracts/evaluation.py` since the MVP, also never read anywhere). Either check failing downgrades a `PROMOTE` to `RETRAIN` (never the reverse, never further downgrades an already-non-PROMOTE decision). Does not benchmark inference itself — accepts an externally-measured `measured_latency_ms`. Never auto-approves anything — `HumanApprovalAgent` remains the sole approval gate. CLI: `agentic-mlops model-decision <evaluation_report_path> [--promotion-policy ...] [--evaluation-config ...] [--baseline-report ...] [--measured-latency-ms ...]` — standalone, not wired into `run-mvp`. Writes `decision_report.json`/`.md`.
@@ -58,11 +58,11 @@ Structuring Agent → Dataset Validation Agent → ...`), not part of the origin
 - [x] Model card generation (`integrations/model_registry.py::_model_card_md`).
 - [x] MLflow Model Registry backend (`MLflowModelRegistryClient` — logs weights as a run artifact, calls `create_model_version`, tags the version with lineage metrics; `ModelRegistryAgent` now routes on `ModelRegistrationInput.backend` via `create_registry_client()`).
 - [x] Azure ML Model Registry backend (`AzureMLModelRegistryClient` — registers `best.pt` as an Azure ML Model asset via `MLClient.models.create_or_update`, tags it with lineage metrics. Needs an `AzureMLConfig` that `ModelRegistrationInput` doesn't carry, so it's injected explicitly — `create_registry_client()` raises a clear error for this backend; CLI: `register-model --backend azure_ml --azure-config ...`).
-- [ ] Model export to ONNX.
-- [ ] Deployment Agent.
-- [ ] Staging endpoint.
-- [ ] Smoke tests.
-- [ ] Production approval gate.
+- [x] Model export to ONNX (`tools/deployer.py::ModelExporter` — real Ultralytics `.export(format="onnx")`, soft dependency on the `onnx` package; `pt` passthrough copy also supported for local-only serving without any export dependency).
+- [x] Deployment Agent (`agents/deployment.py`, `tools/deployer.py::ModelDeployer`) — export → smoke test → versioned local release, mirroring the same "N-th release + `current.json`" pattern as `LocalModelRegistryClient`/`LocalDatasetVersionRegistry`. **No real serving infrastructure exists in this codebase** — no Docker image build, no Azure ML Online Endpoint client, no AKS, no CI/CD trigger (all explicitly out of scope, not started); "deploying" means writing a smoke-tested release to `<deployment_dir>/<endpoint_name>/`, not serving live traffic. `endpoint_name` defaults to `<model_name>-<target>`.
+- [x] Staging endpoint (semi-automatic per spec — proceeds without human approval once smoke tests pass; still just a local release directory, not a live network endpoint).
+- [x] Smoke tests (exported file exists/non-empty; for ONNX, structural validation via `onnx.checker.check_model()` when the `onnx` package is installed, best-effort skip otherwise; failure removes the partial release).
+- [x] Production approval gate (H6) — `target=production` requires BOTH a non-empty `rollback_plan` and a `production_approval_path` JSON with `status="approved"` (same shape/gate pattern `ModelRegistryAgent` already checks). Missing either blocks (`status=blocked`) before any export happens. CLI: `agentic-mlops deploy-model <model_path> --model-name ... [--target production --rollback-plan ... --production-approval ...]` — standalone, not wired into `run-mvp`.
 
 ## Phase 5 — Monitoring and Retraining
 

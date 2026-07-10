@@ -13,6 +13,7 @@ from agentic_mlops.contracts.data_intake import DataIntakeOutput
 from agentic_mlops.contracts.dataset_structuring import DatasetStructuringOutput
 from agentic_mlops.contracts.dataset_versioning import DatasetVersioningOutput
 from agentic_mlops.contracts.datasets import DatasetValidationOutput
+from agentic_mlops.contracts.deployment import DeploymentOutput
 from agentic_mlops.contracts.evaluation import EvaluationOutput
 from agentic_mlops.contracts.label_qa import LabelQAOutput
 from agentic_mlops.contracts.model_decision import ModelDecisionOutput
@@ -204,6 +205,36 @@ class ReportWriter:
 
         logger.info(
             "Pseudo-label report written", extra={"json": str(json_path), "md": str(md_path)}
+        )
+        return json_path, md_path
+
+    def write_deployment_report(
+        self,
+        output: DeploymentOutput,
+        artifacts_dir: Path,
+    ) -> tuple[Path, Path]:
+        """Write deployment_report.json and .md. Returns (json_path, md_path)."""
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        json_path = artifacts_dir / "deployment_report.json"
+        md_path = artifacts_dir / "deployment_report.md"
+
+        payload: dict[str, Any] = {
+            "generated_at": datetime.now(tz=UTC).isoformat(),
+            "success": output.success,
+            "status": output.status,
+            "endpoint_name": output.endpoint_name,
+            "exported_model_path": output.exported_model_path,
+            "release": output.release,
+            "smoke_test_results": output.smoke_test_results,
+            "block_reason": output.block_reason,
+            "message": output.message,
+        }
+
+        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        md_path.write_text(_deployment_report_md(payload), encoding="utf-8")
+
+        logger.info(
+            "Deployment report written", extra={"json": str(json_path), "md": str(md_path)}
         )
         return json_path, md_path
 
@@ -460,6 +491,34 @@ def _annotation_report_md(report: dict[str, Any]) -> str:
             )
         if len(review_records) > 200:
             lines.append(f"| ... | ... | ... | ... | {len(review_records) - 200} more not shown |")
+        lines.append("")
+
+    lines.append(f"**Message:** {report['message']}")
+    return "\n".join(lines)
+
+
+def _deployment_report_md(report: dict[str, Any]) -> str:
+    status_label = str(report["status"]).upper()
+    lines = [
+        "# Deployment Report",
+        "",
+        f"**Status:** `{status_label}`  ",
+        f"**Generated:** {report['generated_at']}  ",
+        f"**Endpoint:** {report['endpoint_name'] or 'N/A'}  ",
+        f"**Release:** {report['release'] if report['release'] is not None else 'N/A'}",
+        "",
+    ]
+
+    if report["block_reason"]:
+        lines += ["## Blocked", "", report["block_reason"], ""]
+
+    if report["exported_model_path"]:
+        lines += [f"**Exported model:** `{report['exported_model_path']}`", ""]
+
+    if report["smoke_test_results"]:
+        lines += ["## Smoke Tests", ""]
+        for chk in report["smoke_test_results"]:
+            lines.append(f"- {chk}")
         lines.append("")
 
     lines.append(f"**Message:** {report['message']}")
