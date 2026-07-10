@@ -1,0 +1,14 @@
+batch: 4
+critical_classes: {}
+device: cpu
+imgsz: 320
+metrics:
+  min_map50: 0.3
+  min_map50_95: 0.15
+  min_precision: 0.25
+  min_recall: 0.25
+mode: val
+name: val_run
+project: outputs/yolo_val_runs
+runtime: {}
+task: detect

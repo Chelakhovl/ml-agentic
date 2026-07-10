@@ -1,0 +1,6 @@
+enabled: true
+tracking_uri: "sqlite:///outputs/mlruns.db"
+experiment_name: "agentic-mlops-local"
+run_name_prefix: "mvp-local-yolo"
+log_artifacts: true
+log_reports: true

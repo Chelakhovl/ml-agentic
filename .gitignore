@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Runtime artifacts — never commit run outputs
+runs/
+outputs/
+mlruns/
+*.db
+
+# Model weights — large binaries, auto-downloaded by ultralytics on first use
+*.pt
+*.onnx
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+.codemie/
+*.swp
+*.swo
+
+# Claude Code — local machine-specific permissions, not shared
+.claude/settings.local.json
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Ruff
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db

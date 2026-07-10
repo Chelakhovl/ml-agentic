@@ -1,0 +1,25 @@
+subscription_id: ""
+resource_group: ""
+workspace_name: ""
+compute_name: ""
+experiment_name: "agentic-mlops-yolo-training"
+
+authentication:
+  credential: default
+
+environment:
+  mode: registered
+  registered_environment: "azureml:yolo-training-env:1"
+
+job:
+  timeout_minutes: 120
+  stream_logs: true
+  download_outputs: true
+  output_name: model_output
+  tags:
+    system: agentic-mlops
+    task: object-detection
+
+data:
+  input_mode: ro_mount
+  asset_uri: null

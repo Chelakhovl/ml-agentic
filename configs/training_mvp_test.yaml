@@ -1,0 +1,9 @@
+batch: 4
+epochs: 1
+imgsz: 320
+mode: local_dry_run
+model: yolo11n.pt
+name: mvp_test
+optimizer: auto
+patience: 1
+project: train_runs

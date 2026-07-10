@@ -1,0 +1,18 @@
+# YOLO training configuration
+# Copy to training.yaml and adjust for your experiment.
+
+model: yolo11m.pt
+epochs: 100
+imgsz: 640
+batch: 16
+optimizer: auto
+patience: 20
+project: factory_defects
+name: yolo11m_dataset_v1
+
+# Training mode: local_dry_run | local_train | azure_train
+mode: local_dry_run
+
+# Azure ML (required for azure_train mode)
+azure_compute_cluster: gpu-cluster
+azure_environment: yolo-training-env:1

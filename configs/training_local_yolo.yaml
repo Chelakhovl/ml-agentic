@@ -1,0 +1,10 @@
+batch: 4
+device: cpu
+epochs: 1
+imgsz: 320
+mode: local_train
+model: yolo11n.pt
+name: coco8_smoke_test
+optimizer: auto
+patience: 1
+project: train_runs

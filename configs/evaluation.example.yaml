@@ -1,0 +1,20 @@
+task: detect
+mode: val
+imgsz: 640
+batch: 8
+device: cpu
+project: outputs/yolo_val_runs
+name: val_run
+metrics:
+  min_map50: 0.85
+  min_map50_95: 0.55
+  min_precision: 0.80
+  min_recall: 0.75
+critical_classes:
+  crack:
+    min_recall: 0.75
+  missing_part:
+    min_recall: 0.80
+runtime:
+  max_latency_ms: 50
+  max_model_size_mb: 300

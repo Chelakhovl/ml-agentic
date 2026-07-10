@@ -1,0 +1,192 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+```bash
+# Install with dev dependencies
+pip install -e ".[dev]"
+
+# Install with optional extras
+pip install -e ".[dev,mlflow]"   # adds LocalMLflowTrackingClient
+pip install -e ".[dev,azure]"    # adds AzureMLTrainingRunner
+
+# Run all unit tests
+pytest tests/unit -v
+
+# Run a single test file
+pytest tests/unit/test_dataset_validator.py -v
+
+# Run with coverage
+pytest tests/unit --cov=agentic_mlops
+
+# Run Azure integration test (requires valid azure_ml.yaml + Azure auth)
+pytest -m azure_integration --azure-config configs/azure_ml.yaml
+
+# Lint / format
+ruff check src tests
+ruff format src tests
+
+# CLI: validate a YOLO dataset
+agentic-mlops validate-dataset /path/to/dataset
+
+# CLI: train
+#   fake = write plan only; local-yolo = Ultralytics; azure-ml = Azure ML SDK
+agentic-mlops train --dataset-path /path/to/dataset --data-yaml /path/to/data.yaml \
+  --training-config configs/training.yaml --runner fake
+
+agentic-mlops train --dataset-path /path/to/dataset --data-yaml /path/to/data.yaml \
+  --training-config configs/training.yaml --runner azure-ml \
+  --azure-config configs/azure_ml.yaml --output-dir ./runs/azure_run_001
+
+# CLI: evaluate (auto-resolves weights from --training-output if provided)
+agentic-mlops evaluate --dataset-path /path/to/dataset --data-yaml /path/to/data.yaml \
+  --promotion-policy configs/promotion_policy.yaml --runner fake
+
+# CLI: evaluate on Azure ML compute (submits a CommandJob running azure_jobs/eval_yolo.py)
+agentic-mlops evaluate --dataset-path /path/to/dataset --data-yaml /path/to/data.yaml \
+  --training-output ./runs/azure_run_001/training_output.json \
+  --runner azure-ml --azure-config configs/azure_ml.yaml --output-dir ./runs/azure_eval_001
+
+# CLI: approve (interactive by default; --no-interactive requires --action)
+agentic-mlops approve --evaluation-output ./runs/evaluation/evaluation_report.json \
+  --action approve_model --no-interactive
+
+# CLI: register-model (standalone; gates are re-checked from disk artifacts)
+#   --backend local (default) | mlflow (needs mlflow tracking) | azure_ml (needs --azure-config)
+agentic-mlops register-model \
+  --model-name my-yolo-model \
+  --training-output ./runs/training/training_output.json \
+  --evaluation-output ./runs/evaluation/evaluation_output.json \
+  --approval-decision ./runs/approval/approval_decision.json \
+  --registry-dir outputs/model_registry
+
+# CLI: dry-run the full MVP pipeline
+agentic-mlops run-mvp \
+  --dataset-path /path/to/dataset \
+  --data-yaml /path/to/data.yaml \
+  --training-config configs/training.yaml \
+  --output-dir ./runs/workflow_001 \
+  --dry-run --no-interactive
+
+# CLI: run-mvp with registry and MLflow
+agentic-mlops run-mvp \
+  --dataset-path /path/to/dataset \
+  --data-yaml /path/to/data.yaml \
+  --training-config configs/training.yaml \
+  --output-dir ./runs/workflow_001 \
+  --register-approved-model --model-name my-model \
+  --mlflow-config configs/mlflow.example.yaml --enable-mlflow \
+  --no-dry-run --no-interactive --approval-action approve_model
+```
+
+Copy `configs/training.example.yaml`, `configs/promotion_policy.example.yaml`,
+`configs/mlflow.example.yaml`, and `configs/azure_ml.example.yaml` as starting configs.
+
+## Architecture
+
+This is a **sequential multi-agent MLOps pipeline** for YOLO object detection. Agents orchestrate and report; tools execute deterministically. Data flows through typed Pydantic v2 contracts at every boundary.
+
+### Pipeline (5 MVP agents, run in order)
+
+| Agent | Input → Output Contract | Gate |
+|---|---|---|
+| `DatasetValidationAgent` | `DatasetValidationInput → DatasetValidationOutput` | Validates YOLO structure, labels, bbox ranges, cross-split duplicates |
+| `TrainingAgent` | `TrainingInput → TrainingOutput` | Blocked if `dataset_validation_status == "failed"` |
+| `EvaluationAgent` | `EvaluationInput → EvaluationOutput` | Blocked if training `status in {failed, cancelled}` |
+| `HumanApprovalAgent` | `ApprovalInput → ApprovalOutput` | Interactive or non-interactive; requires `--force` for risky actions |
+| `ModelRegistryAgent` | `ModelRegistrationInput → ModelRegistrationOutput` | Conditional — only runs when approval `action == "approve_model"`; 5 gate checks |
+
+### Key packages
+
+- `agents/` — one class per pipeline stage, all extend `BaseAgent` (takes `artifacts_dir`, attaches structured logger, implements `run(input) → output`); agents never hold ML state — all computation is delegated to tools
+- `contracts/` — Pydantic v2 I/O models; `ToolResult` is the shared output base (carries `success`, `message`, `artifacts`, `warnings`, `errors`, `metadata`); `WorkflowState` StrEnum (14 states) lives in `contracts/common.py`
+- `tools/` — `DatasetValidator`, `YoloTrainer`, `YoloEvaluator`, `ReportWriter`, `TrainingRunner` (local + `AzureMLTrainingRunner`), `EvaluationRunner` (local + `AzureMLEvaluationRunner`) — pure deterministic execution
+- `workflows/` — `MVPWorkflow` chains all five agents and stops on first failure via factory injection (see below); `PromotionPolicy` enforces mAP/precision/recall thresholds loaded from YAML; note `MVPWorkflow` only wires `fake`/`local-yolo` runners — Azure ML training/evaluation/registry are standalone-CLI-only (`train`/`evaluate`/`register-model --runner azure-ml`), not reachable via `run-mvp`
+- `integrations/` — MLflow tracking hierarchy (see below) + model registry clients (Local/MLflow/Azure ML, see below); `AzureMLTrainingClient` in `azure_ml_client.py` is a legacy dead-code stub — real Azure ML training goes through `tools/training_runner.py::AzureMLTrainingRunner` (SDK v2), always injected by the CLI
+- `azure_jobs/` — entry scripts submitted to Azure ML as command jobs: `train_yolo.py` (training), `eval_yolo.py` (evaluation, writes `metrics.json` + plots). Both are self-contained (no `agentic_mlops` package import) since only this directory is uploaded as the job's code snapshot
+- `observability/` — JSON-line structured logging via `configure_logging()`; use `--json-logs` CLI flag; all modules use `get_logger(__name__)` with `extra=` for structured fields
+- `cli/main.py` — Typer app with six commands: `validate-dataset`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`
+
+### Training and evaluation runners
+
+Both `train` and `evaluate` CLI commands support the same three runners; `azure-ml` requires `--azure-config configs/azure_ml.yaml` and `az login` or service principal env vars (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_SECRET`).
+
+| Runner flag | Training | Evaluation |
+|---|---|---|
+| `--runner fake` (default in dry-run) | Writes `training_request.json`; no YOLO call | Deterministic fake metrics (mAP50=0.862); no YOLO call |
+| `--runner local-yolo` | Calls Ultralytics locally (requires `ultralytics` installed) | Real Ultralytics `.val()` locally |
+| `--runner azure-ml` | Submits a CommandJob running `azure_jobs/train_yolo.py`; downloads `best.pt`/`last.pt`/`results.csv` | Submits a CommandJob running `azure_jobs/eval_yolo.py`; downloads `metrics.json` + confusion-matrix/PR-curve plots |
+
+### Dual evaluation policy system
+
+There are two independent config models that both feed the evaluation step — do not conflate them:
+
+- **`PromotionPolicy`** (`workflows/policies.py`, loaded from `promotion_policy.yaml`) — drives `evaluate_metrics_against_policy()` which returns `(recommendation, passed_checks, failed_checks)`. Decision tree: critical class recall fail → `NEED_LABEL_REVIEW`; only recall fails → `COLLECT_MORE_DATA`; only precision fails → `REVIEW_LABELS`; else → `RETRAIN`; all pass → `PROMOTE_CANDIDATE`.
+- **`EvaluationConfig`** (`contracts/evaluation.py`) — YOLO runtime config (imgsz, batch, device, per-class thresholds) passed via `--evaluation-config`. Separate from promotion policy.
+
+### MLflow integration hierarchy
+
+Four implementations in `integrations/mlflow_client.py`:
+- `NoOpMLflowTrackingClient` — safe default; does nothing; no mlflow package required
+- `LocalMLflowTrackingClient` — uses `mlflow` package; supports SQLite (`sqlite:///...`) or file-based tracking URIs
+- `FakeMLflowTrackingClient` — in-memory test double; records all calls in `self.runs` dict (aliased as `FakeMLflowClient`)
+- `MLflowClient` — legacy stub; all methods raise `NotImplementedError`; deprecated
+
+Enable via `--mlflow-config configs/mlflow.example.yaml --enable-mlflow` on any command, or pass `mlflow_client` + `mlflow_config` directly to `MVPWorkflow`.
+
+### Model Registry
+
+`ModelRegistryAgent` runs after `HumanApprovalAgent` and enforces 5 gates before registering:
+1. `approval.status == "approved"`
+2. `approval.action == "approve_model"`
+3. `evaluation.success == True`
+4. `training.job_status == "completed"`
+5. `best.pt` exists at `training.best_weights_path` (falls back to sibling of `training_output.json`)
+
+Three registry backends, all fully implemented in `integrations/model_registry.py`:
+- `LocalModelRegistryClient` (default) — writes to `<registry_dir>/<model_name>/versions/<N>/model/best.pt` plus `lineage.json`, `model_card.md`, `registration_output.json`; updates `<registry_dir>/<model_name>/latest.json` only after all writes succeed; SHA-256 verified copy, partial version dir cleaned up on failure.
+- `MLflowModelRegistryClient` — logs `best.pt` as a run artifact, then `MlflowClient().create_model_version()` (not `mlflow.register_model()` — MLflow ≥3.x's version requires a "Logged Model" entity that a plain `log_artifact()` doesn't create); tags the version with lineage metrics.
+- `AzureMLModelRegistryClient` — registers `best.pt` as an Azure ML Model asset via `MLClient.models.create_or_update()`.
+
+**Backend routing nuance:** `ModelRegistryAgent` resolves its client via `create_registry_client(inp.backend)` when no `registry_client` is injected — this works for `local`/`mlflow` (both have everything they need in `ModelRegistrationInput`). `azure_ml` needs external connection info (subscription/resource group/workspace) that the input contract doesn't carry, so `create_registry_client()` raises a clear `ValueError` for it — the CLI (`register-model --backend azure_ml --azure-config ...`) builds `AzureMLModelRegistryClient(AzureMLConfig.from_yaml(...))` itself and injects it explicitly, same pattern as `train`/`evaluate --runner azure-ml`.
+
+### MVPWorkflow factory injection
+
+`MVPWorkflow.__init__` accepts five `_xxx_factory: Callable[[Path], Agent] | None` parameters (`_validation_factory`, `_training_factory`, `_evaluation_factory`, `_approval_factory`, `_registry_factory`), each defaulting to a lambda that also injects MLflow when a parent run is active. This enables test overrides without any mock framework — pass a lambda returning a stub instead.
+
+### Testing conventions
+
+- `conftest.py` exports plain helper functions (`make_valid_dataset`, `make_image`, `make_label`, `make_data_yaml`) — **not** `@pytest.fixture` decorated; tests import and call them directly with `tmp_path`
+- `make_image` writes a minimal JPEG stub (magic bytes + filename bytes + EOI) sufficient for hash-based duplicate detection
+- Azure/MLflow calls are replaced with `FakeAzureMLTrainingClient` / `FakeMLflowTrackingClient` / `FakeModelRegistryClient` injected via constructor
+- `MVPWorkflow` tests inject `_StubAgent` / `_RaisingAgent` factories — never use real agents in workflow tests
+- CLI is tested via `typer.testing.CliRunner`
+
+### Design documentation
+
+`agentic_mlops_workflow_docs/` contains the full agent and architecture specs:
+- `agents/` — 13 markdown specs (00–12) covering all planned agents including the 8 not yet implemented
+- `docs/` — 14 architecture docs (state machine, MVP scope, data contracts, etc.)
+- `prompts/` — Claude Code prompts used to bootstrap this project
+
+### What is not yet implemented
+
+As of 2026-07-10, all 5 MVP agents are fully implemented and tested, including every
+runner variant: `fake`/`local-yolo`/`azure-ml` for training and evaluation, and
+`local`/`mlflow`/`azure_ml` for model registry (see
+`agentic_mlops_workflow_docs/docs/13_backlog.md` for the authoritative, actively-maintained
+status of every planned item). Still missing:
+
+- `AzureMLTrainingClient` legacy stub in `integrations/azure_ml_client.py` — dead code, safe to remove once confirmed unused
+- Azure ML pipeline components (multi-step AML pipeline instead of a single CommandJob per step)
+- Registering the dataset itself as an Azure ML Data Asset; storing artifacts in Blob/ADLS instead of local disk
+- 8 additional agents described in `agentic_mlops_workflow_docs/agents/` — Data Intake, Dataset Structuring, Annotation/Pseudo-label, Label QA, Dataset Versioning, Model Decision (partially covered by `HumanApprovalAgent` + `PromotionPolicy`), Deployment, Monitoring. These correspond to Phase 3 (labeling loop) and the rest of Phase 4/5 in the backlog — not started.
+- Repo hygiene: not yet a git repository (no version control), no CI workflow
+
+Note: `agentic_mlops_workflow_docs/docs/` and `agentic_mlops_workflow_docs/agents/` are
+design specs frozen at the project-bootstrap stage — they describe the full target
+architecture (13 agents) the MVP is a subset of, and are **not** updated to track
+implementation status. Trust `13_backlog.md` and this file, not the other docs in that
+folder, for "is X implemented" questions.

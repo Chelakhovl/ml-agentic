@@ -1,0 +1,9 @@
+thresholds:
+  map50_min: 0.01
+  map50_95_min: 0.005
+  precision_min: 0.01
+  recall_min: 0.01
+critical_class_recall_min: 0.0
+critical_classes: []
+require_improvement_over_baseline: false
+baseline_improvement_min_map50: 0.0

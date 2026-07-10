@@ -1,0 +1,24 @@
+# Promotion policy for Model Decision Agent
+# Copy to promotion_policy.yaml and adjust thresholds.
+
+thresholds:
+  map50_min: 0.75
+  map50_95_min: 0.50
+  precision_min: 0.70
+  recall_min: 0.70
+
+# Per-class minimum recall for critical classes.
+# Training will not be promoted if any critical class is below this threshold.
+critical_class_recall_min: 0.65
+
+# Critical classes — recall is strictly enforced for these.
+critical_classes:
+  - crack
+  - missing_part
+
+# If true, the candidate model must be strictly better than baseline
+# on map50 to be promoted.
+require_improvement_over_baseline: true
+
+# Minimum absolute improvement over baseline to allow promotion.
+baseline_improvement_min_map50: 0.01
