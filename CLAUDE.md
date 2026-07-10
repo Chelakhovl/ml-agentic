@@ -79,6 +79,17 @@ agentic-mlops run-mvp \
   --register-approved-model --model-name my-model \
   --mlflow-config configs/mlflow.example.yaml --enable-mlflow \
   --no-dry-run --no-interactive --approval-action approve_model
+
+# CLI: run-mvp entirely on Azure ML (training + evaluation + registry)
+agentic-mlops run-mvp \
+  --dataset-path /path/to/dataset \
+  --data-yaml /path/to/data.yaml \
+  --training-config configs/training.yaml \
+  --output-dir ./runs/workflow_azure_001 \
+  --training-runner azure-ml --evaluation-runner azure-ml \
+  --register-approved-model --registry-backend azure_ml \
+  --azure-config configs/azure_ml.yaml \
+  --no-dry-run --no-interactive --approval-action approve_model
 ```
 
 Copy `configs/training.example.yaml`, `configs/promotion_policy.example.yaml`,
@@ -103,7 +114,7 @@ This is a **sequential multi-agent MLOps pipeline** for YOLO object detection. A
 - `agents/` — one class per pipeline stage, all extend `BaseAgent` (takes `artifacts_dir`, attaches structured logger, implements `run(input) → output`); agents never hold ML state — all computation is delegated to tools
 - `contracts/` — Pydantic v2 I/O models; `ToolResult` is the shared output base (carries `success`, `message`, `artifacts`, `warnings`, `errors`, `metadata`); `WorkflowState` StrEnum (14 states) lives in `contracts/common.py`
 - `tools/` — `DatasetValidator`, `YoloTrainer`, `YoloEvaluator`, `ReportWriter`, `TrainingRunner` (local + `AzureMLTrainingRunner`), `EvaluationRunner` (local + `AzureMLEvaluationRunner`) — pure deterministic execution
-- `workflows/` — `MVPWorkflow` chains all five agents and stops on first failure via factory injection (see below); `PromotionPolicy` enforces mAP/precision/recall thresholds loaded from YAML; note `MVPWorkflow` only wires `fake`/`local-yolo` runners — Azure ML training/evaluation/registry are standalone-CLI-only (`train`/`evaluate`/`register-model --runner azure-ml`), not reachable via `run-mvp`
+- `workflows/` — `MVPWorkflow` chains all five agents and stops on first failure via factory injection (see below); `PromotionPolicy` enforces mAP/precision/recall thresholds loaded from YAML; `run-mvp --training-runner azure-ml --evaluation-runner azure-ml --registry-backend azure_ml --azure-config configs/azure_ml.yaml` runs the whole pipeline on Azure ML (one shared `AzureMLConfig` resolved once at the top of `MVPWorkflow.run()`, fails fast with a clear error if `azure_config_path` is missing for a step that needs it — before any step, including validation, executes)
 - `integrations/` — MLflow tracking hierarchy (see below) + model registry clients (Local/MLflow/Azure ML, see below); `azure_ml_client.py` only holds the SDK v2 `MLClient` factories (`DefaultAzureMLClientFactory` / `FakeAzureMLClientFactory`) — real Azure ML training/evaluation go through `tools/training_runner.py::AzureMLTrainingRunner` / `tools/evaluation_runner.py::AzureMLEvaluationRunner`, always injected by the CLI. `YoloTrainer`/`YoloEvaluator` raise a clear `RuntimeError` for `azure_train`/`azure_eval` mode if no runner was injected — there is no legacy fallback path anymore (removed 2026-07-10; it used to raise `NotImplementedError` via a now-deleted `AzureMLTrainingClient` stub)
 - `azure_jobs/` — entry scripts submitted to Azure ML as command jobs: `train_yolo.py` (training), `eval_yolo.py` (evaluation, writes `metrics.json` + plots). Both are self-contained (no `agentic_mlops` package import) since only this directory is uploaded as the job's code snapshot
 - `observability/` — JSON-line structured logging via `configure_logging()`; use `--json-logs` CLI flag; all modules use `get_logger(__name__)` with `extra=` for structured fields

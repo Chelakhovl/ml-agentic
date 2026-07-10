@@ -684,10 +684,20 @@ def run_mvp(
         False, "--fail-on-warnings", help="Treat dataset warnings as failures"
     ),
     training_runner: str = typer.Option(
-        None, "--training-runner", help="Override training runner: fake | local-yolo"
+        None, "--training-runner", help="Override training runner: fake | local-yolo | azure-ml"
     ),
     evaluation_runner: str = typer.Option(
-        None, "--evaluation-runner", help="Override evaluation runner: fake | local-yolo"
+        None,
+        "--evaluation-runner",
+        help="Override evaluation runner: fake | local-yolo | azure-ml",
+    ),
+    azure_config: str = typer.Option(
+        None,
+        "--azure-config",
+        help=(
+            "Path to Azure ML config YAML — required when --training-runner azure-ml, "
+            "--evaluation-runner azure-ml, or --registry-backend azure_ml"
+        ),
     ),
     mlflow_config: str = typer.Option(
         None, "--mlflow-config", help="Path to MLflow config YAML"
@@ -761,6 +771,7 @@ def run_mvp(
             fail_on_warnings=fail_on_warnings,
             training_runner=training_runner,
             evaluation_runner=evaluation_runner,
+            azure_config_path=azure_config,
             register_approved_model=register_approved_model,
             model_name=model_name,
             registry_backend=parsed_backend,

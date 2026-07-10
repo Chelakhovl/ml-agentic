@@ -277,6 +277,100 @@ def test_output_dir_structure_created(tmp_path: Path) -> None:
     assert (out_dir / "workflow_summary.md").exists()
 
 
+# ── Azure ML wiring ────────────────────────────────────────────────────────────
+
+
+def _make_azure_config_yaml(tmp_path: Path) -> Path:
+    p = tmp_path / "azure_ml.yaml"
+    p.write_text(
+        "subscription_id: sub\nresource_group: rg\nworkspace_name: ws\n"
+        "compute_name: c\nenvironment:\n  mode: registered\n"
+        "  registered_environment: azureml:e:1\n",
+        encoding="utf-8",
+    )
+    return p
+
+
+def test_azure_training_runner_missing_config_fails_fast(tmp_path: Path) -> None:
+    workflow, inp, out_dir = _make_workflow(tmp_path)
+    inp = inp.model_copy(update={"training_runner": "azure-ml"})
+
+    result = workflow.run(inp)
+
+    assert result.success is False
+    assert "azure_config_path" in result.message
+    assert result.steps == []  # fails before any step (incl. validation) runs
+
+
+def test_azure_evaluation_runner_missing_config_fails_fast(tmp_path: Path) -> None:
+    workflow, inp, out_dir = _make_workflow(tmp_path)
+    inp = inp.model_copy(update={"evaluation_runner": "azure-ml"})
+
+    result = workflow.run(inp)
+
+    assert result.success is False
+    assert "azure_config_path" in result.message
+    assert result.steps == []
+
+
+def test_azure_registry_backend_missing_config_fails_fast(tmp_path: Path) -> None:
+    from agentic_mlops.contracts.model_registry import RegistryBackend
+
+    workflow, inp, out_dir = _make_workflow(tmp_path)
+    inp = inp.model_copy(update={"registry_backend": RegistryBackend.AZURE_ML})
+
+    result = workflow.run(inp)
+
+    assert result.success is False
+    assert "azure_config_path" in result.message
+    assert result.steps == []
+
+
+def test_azure_training_runner_wired_into_default_training_agent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """training_runner='azure-ml' + azure_config_path resolves a real
+    AzureMLTrainingRunner and injects it into the *default* TrainingAgent factory
+    (i.e. without overriding _training_factory) — proves the run()-level wiring,
+    not AzureMLTrainingRunner's own job-submission behavior (covered elsewhere)."""
+    azure_cfg_path = _make_azure_config_yaml(tmp_path)
+    calls: list[Path] = []
+
+    def fake_run(self, inp, artifacts_dir):  # noqa: ANN001
+        calls.append(artifacts_dir)
+        return _train_ok()
+
+    monkeypatch.setattr(
+        "agentic_mlops.tools.training_runner.AzureMLTrainingRunner.run", fake_run
+    )
+
+    cfg_path = _make_training_config(tmp_path / "train.yaml")
+    out_dir = tmp_path / "out"
+    workflow = MVPWorkflow(
+        _validation_factory=lambda d: _StubAgent(d, _val_ok()),
+        _evaluation_factory=lambda d: _StubAgent(d, _eval_ok()),
+        _approval_factory=lambda d: _StubAgent(d, _approval_ok()),
+    )
+    inp = MVPWorkflowInput(
+        dataset_path=str(tmp_path / "ds"),
+        data_yaml_path=str(tmp_path / "ds" / "data.yaml"),
+        training_config_path=str(cfg_path),
+        output_dir=str(out_dir),
+        interactive_approval=False,
+        approval_action=ApprovalAction.APPROVE_MODEL,
+        dry_run=False,
+        training_runner="azure-ml",
+        azure_config_path=str(azure_cfg_path),
+    )
+
+    result = workflow.run(inp)
+
+    assert len(calls) == 1
+    assert result.success is True
+    training_step = next(s for s in result.steps if s.step == "training")
+    assert training_step.success is True
+
+
 def test_cli_run_mvp_dry_run(tmp_path: Path) -> None:
     """CLI run-mvp happy path using real agents in dry-run mode."""
     from tests.conftest import make_valid_dataset

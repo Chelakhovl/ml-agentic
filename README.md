@@ -77,7 +77,7 @@ src/agentic_mlops/
   observability/    ← structured logging
   cli/              ← Typer CLI
 tests/
-  unit/             ← 250 tests across all agents, tools, and integrations
+  unit/             ← 254 tests across all agents, tools, and integrations
   conftest.py       ← shared fixtures
 configs/
   training.example.yaml

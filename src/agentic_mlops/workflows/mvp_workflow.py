@@ -13,10 +13,11 @@ from agentic_mlops.agents.human_approval import HumanApprovalAgent
 from agentic_mlops.agents.model_registry import ModelRegistryAgent
 from agentic_mlops.agents.training import TrainingAgent
 from agentic_mlops.contracts.approvals import ApprovalAction, ApprovalInput, ApprovalStatus
+from agentic_mlops.contracts.azure_ml import AzureMLConfig
 from agentic_mlops.contracts.datasets import DatasetValidationInput
 from agentic_mlops.contracts.evaluation import EvaluationInput, EvaluationMode
 from agentic_mlops.contracts.mlflow_config import MLflowConfig
-from agentic_mlops.contracts.model_registry import ModelRegistrationInput
+from agentic_mlops.contracts.model_registry import ModelRegistrationInput, RegistryBackend
 from agentic_mlops.contracts.training import TrainingConfig, TrainingInput, TrainingMode
 from agentic_mlops.contracts.workflows import (
     MVPWorkflowInput,
@@ -25,8 +26,14 @@ from agentic_mlops.contracts.workflows import (
     MVPWorkflowStepResult,
 )
 from agentic_mlops.integrations.mlflow_client import MLflowTrackingClientBase
+from agentic_mlops.integrations.model_registry import (
+    AzureMLModelRegistryClient,
+    ModelRegistryClientBase,
+)
 from agentic_mlops.observability.logging import get_logger
+from agentic_mlops.tools.evaluation_runner import AzureMLEvaluationRunner
 from agentic_mlops.tools.report_writer import ReportWriter
+from agentic_mlops.tools.training_runner import AzureMLTrainingRunner
 
 
 class MVPWorkflow:
@@ -64,6 +71,14 @@ class MVPWorkflow:
         steps: list[MVPWorkflowStepResult] = []
         all_artifacts: list[str] = []
 
+        # ── Resolve Azure ML runners/client up front (fail fast, before any step) ──
+        try:
+            azure_train_runner = self._maybe_azure_train_runner(inp)
+            azure_eval_runner = self._maybe_azure_eval_runner(inp)
+            azure_registry_client = self._maybe_azure_registry_client(inp)
+        except ValueError as exc:
+            return self._fail(output_dir, steps, all_artifacts, str(exc), None)
+
         # ── Create parent MLflow run ──────────────────────────────────────────
         mlflow_run_id: str | None = None
         if self._mlflow and self._mlflow_config and self._mlflow_config.enabled:
@@ -81,15 +96,19 @@ class MVPWorkflow:
                 "evaluation_runner": inp.evaluation_runner or "fake",
             })
 
-        # ── Build factories (inject MLflow into defaults only) ────────────────
+        # ── Build factories (inject MLflow + Azure ML runners into defaults only) ──
         val_factory = self._user_validation_factory or self._default_val_factory(mlflow_run_id)
-        train_factory = self._user_training_factory or self._default_train_factory(mlflow_run_id)
-        eval_factory = self._user_evaluation_factory or self._default_eval_factory(mlflow_run_id)
+        train_factory = self._user_training_factory or self._default_train_factory(
+            mlflow_run_id, azure_train_runner
+        )
+        eval_factory = self._user_evaluation_factory or self._default_eval_factory(
+            mlflow_run_id, azure_eval_runner
+        )
         approval_factory = (
             self._user_approval_factory or self._default_approval_factory(mlflow_run_id)
         )
-        registry_factory = (
-            self._user_registry_factory or self._default_registry_factory(mlflow_run_id)
+        registry_factory = self._user_registry_factory or self._default_registry_factory(
+            mlflow_run_id, azure_registry_client
         )
 
         # ── Step 1: Dataset Validation ────────────────────────────────────────
@@ -128,6 +147,8 @@ class MVPWorkflow:
             cfg = TrainingConfig.from_yaml(inp.training_config_path)
             if inp.training_runner == "local-yolo":
                 cfg.mode = TrainingMode.LOCAL_TRAIN
+            elif inp.training_runner == "azure-ml":
+                cfg.mode = TrainingMode.AZURE_TRAIN
             elif inp.dry_run:
                 cfg.mode = TrainingMode.LOCAL_DRY_RUN
             train_agent = train_factory(train_dir)
@@ -163,6 +184,8 @@ class MVPWorkflow:
             weights_path = train_result.best_weights_path or "dry_run"
             if inp.evaluation_runner == "local-yolo":
                 mode = EvaluationMode.LOCAL_EVAL
+            elif inp.evaluation_runner == "azure-ml":
+                mode = EvaluationMode.AZURE_EVAL
             elif inp.dry_run:
                 mode = EvaluationMode.LOCAL_DRY_RUN
             else:
@@ -339,6 +362,33 @@ class MVPWorkflow:
 
         return output
 
+    # ── Azure ML resolution ─────────────────────────────────────────────────────
+    # Training/evaluation/registry each reuse the same azure_config_path; resolved
+    # up front in run() so a missing/invalid config fails before any step executes.
+
+    def _maybe_azure_train_runner(self, inp: MVPWorkflowInput) -> AzureMLTrainingRunner | None:
+        if inp.training_runner != "azure-ml":
+            return None
+        if not inp.azure_config_path:
+            raise ValueError("azure_config_path is required when training_runner='azure-ml'.")
+        return AzureMLTrainingRunner(AzureMLConfig.from_yaml(inp.azure_config_path))
+
+    def _maybe_azure_eval_runner(self, inp: MVPWorkflowInput) -> AzureMLEvaluationRunner | None:
+        if inp.evaluation_runner != "azure-ml":
+            return None
+        if not inp.azure_config_path:
+            raise ValueError("azure_config_path is required when evaluation_runner='azure-ml'.")
+        return AzureMLEvaluationRunner(AzureMLConfig.from_yaml(inp.azure_config_path))
+
+    def _maybe_azure_registry_client(
+        self, inp: MVPWorkflowInput
+    ) -> ModelRegistryClientBase | None:
+        if inp.registry_backend != RegistryBackend.AZURE_ML:
+            return None
+        if not inp.azure_config_path:
+            raise ValueError("azure_config_path is required when registry_backend='azure_ml'.")
+        return AzureMLModelRegistryClient(AzureMLConfig.from_yaml(inp.azure_config_path))
+
     # ── Default factory builders ──────────────────────────────────────────────
 
     def _default_val_factory(self, mlflow_run_id: str | None) -> Callable[[Path], Any]:
@@ -349,21 +399,29 @@ class MVPWorkflow:
             )
         return lambda d: DatasetValidationAgent(artifacts_dir=d)
 
-    def _default_train_factory(self, mlflow_run_id: str | None) -> Callable[[Path], Any]:
+    def _default_train_factory(
+        self,
+        mlflow_run_id: str | None,
+        azure_runner: AzureMLTrainingRunner | None = None,
+    ) -> Callable[[Path], Any]:
         if mlflow_run_id and self._mlflow:
             client, rid = self._mlflow, mlflow_run_id
             return lambda d: TrainingAgent(
-                artifacts_dir=d, mlflow_client=client, mlflow_run_id=rid
+                artifacts_dir=d, mlflow_client=client, mlflow_run_id=rid, azure_runner=azure_runner
             )
-        return lambda d: TrainingAgent(artifacts_dir=d)
+        return lambda d: TrainingAgent(artifacts_dir=d, azure_runner=azure_runner)
 
-    def _default_eval_factory(self, mlflow_run_id: str | None) -> Callable[[Path], Any]:
+    def _default_eval_factory(
+        self,
+        mlflow_run_id: str | None,
+        azure_runner: AzureMLEvaluationRunner | None = None,
+    ) -> Callable[[Path], Any]:
         if mlflow_run_id and self._mlflow:
             client, rid = self._mlflow, mlflow_run_id
             return lambda d: EvaluationAgent(
-                artifacts_dir=d, mlflow_client=client, mlflow_run_id=rid
+                artifacts_dir=d, mlflow_client=client, mlflow_run_id=rid, azure_runner=azure_runner
             )
-        return lambda d: EvaluationAgent(artifacts_dir=d)
+        return lambda d: EvaluationAgent(artifacts_dir=d, azure_runner=azure_runner)
 
     def _default_approval_factory(self, mlflow_run_id: str | None) -> Callable[[Path], Any]:
         if mlflow_run_id and self._mlflow:
@@ -373,13 +431,20 @@ class MVPWorkflow:
             )
         return lambda d: HumanApprovalAgent(artifacts_dir=d)
 
-    def _default_registry_factory(self, mlflow_run_id: str | None) -> Callable[[Path], Any]:
+    def _default_registry_factory(
+        self,
+        mlflow_run_id: str | None,
+        registry_client: ModelRegistryClientBase | None = None,
+    ) -> Callable[[Path], Any]:
         if mlflow_run_id and self._mlflow:
             client, rid = self._mlflow, mlflow_run_id
             return lambda d: ModelRegistryAgent(
-                artifacts_dir=d, mlflow_client=client, mlflow_run_id=rid
+                artifacts_dir=d,
+                registry_client=registry_client,
+                mlflow_client=client,
+                mlflow_run_id=rid,
             )
-        return lambda d: ModelRegistryAgent(artifacts_dir=d)
+        return lambda d: ModelRegistryAgent(artifacts_dir=d, registry_client=registry_client)
 
     # ── Failure helpers ───────────────────────────────────────────────────────
 

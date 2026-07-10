@@ -41,6 +41,10 @@ class MVPWorkflowInput(BaseModel):
     force_approve: bool = False
     training_runner: str | None = None
     evaluation_runner: str | None = None
+    # Path to azure_ml.yaml — required when training_runner/evaluation_runner is
+    # "azure-ml" or registry_backend is "azure_ml"; the same workspace config is
+    # reused across all three steps.
+    azure_config_path: str | None = None
     # Model registry (Step 5 — conditional)
     register_approved_model: bool = False
     model_name: str = "yolo-model"

@@ -1,6 +1,6 @@
 # Backlog
 
-> Statuses last verified 2026-07-10: 250/250 unit tests passing, `ruff check` clean.
+> Statuses last verified 2026-07-10: 254/254 unit tests passing, `ruff check` clean.
 
 ## Phase 1 — MVP
 
@@ -15,7 +15,7 @@
 - [x] Реализовать Evaluation Agent с mocked metrics для dry-run.
 - [x] Реализовать Decision Policy (`workflows/policies.py`).
 - [x] Реализовать Human Approval через CLI.
-- [x] Написать unit tests (250 tests across 11 files).
+- [x] Написать unit tests (254 tests across 11 files).
 - [x] Написать README с examples.
 - [x] Реализовать Model Registry Agent + local filesystem backend (pulled forward from Phase 4).
 
@@ -30,6 +30,7 @@
 - [ ] Store artifacts in Azure Blob/ADLS.
 - [x] Log metrics/artifacts to MLflow (via `LocalMLflowTrackingClient`, per-agent logging).
 - [x] Retire the legacy stub path — `AzureMLTrainingClient`/`AzureMLTrainingClientBase`/`FakeAzureMLTrainingClient` deleted from `integrations/azure_ml_client.py`; `YoloTrainer` now only takes `azure_runner` and raises `RuntimeError` (not a silent `NotImplementedError` fallback) when azure_train is requested without one — matches `YoloEvaluator`'s existing pattern for azure_eval.
+- [x] `run-mvp` end-to-end on Azure ML — `MVPWorkflowInput.azure_config_path` + `--training-runner azure-ml --evaluation-runner azure-ml --registry-backend azure_ml --azure-config ...`; previously Azure ML was reachable only via the standalone `train`/`evaluate`/`register-model` CLI commands, not the chained workflow.
 
 ## Phase 3 — Labeling Loop
 
