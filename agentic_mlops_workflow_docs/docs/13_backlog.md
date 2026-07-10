@@ -1,6 +1,6 @@
 # Backlog
 
-> Statuses last verified 2026-07-10: 311/311 unit tests passing, `ruff check` clean.
+> Statuses last verified 2026-07-10: 328/328 unit tests passing, `ruff check` clean.
 
 ## Phase 0 — Data Ingestion
 
@@ -24,7 +24,7 @@ Structuring Agent → Dataset Validation Agent → ...`), not part of the origin
 - [x] Реализовать Evaluation Agent с mocked metrics для dry-run.
 - [x] Реализовать Decision Policy (`workflows/policies.py`).
 - [x] Реализовать Human Approval через CLI.
-- [x] Написать unit tests (311 tests across 14 files).
+- [x] Написать unit tests (328 tests across 15 files).
 - [x] Написать README с examples.
 - [x] Реализовать Model Registry Agent + local filesystem backend (pulled forward from Phase 4).
 
@@ -43,9 +43,9 @@ Structuring Agent → Dataset Validation Agent → ...`), not part of the origin
 
 ## Phase 3 — Labeling Loop
 
-- [ ] Annotation / Pseudo-label Agent.
-- [ ] YOLO predict tool.
-- [ ] Confidence routing.
+- [x] Annotation / Pseudo-label Agent (`agents/annotation.py`, `tools/pseudo_labeler.py`) — runs an approved YOLO model's `.predict()` over unlabeled/partially-labeled images, writes candidate YOLO labels to a **separate** `pseudo_labels/` directory (never merges into an existing dataset's `labels/` — matches the spec's "not final without review" safety rule), and routes each image by its *weakest* detection's confidence: all detections ≥ `auto_candidate` → `high` (still sample-audited, never auto-final); ≥ `human_review` → `medium`; below → `low` (hard sample). Images with **zero** detections are routed to `medium` rather than auto-accepted as empty, since the model gives no confidence signal to trust either way. Skips (does not re-predict) any image that already has a label under `existing_labels_path` when `skip_existing_labels=True` (default) — human labels are never overwritten. `review_queue.json` lists only medium/low images. Standalone CLI `agentic-mlops pseudo-label` — not wired into `run-mvp`, matching Label QA/Data Intake/Dataset Structuring.
+- [x] YOLO predict tool (built into `tools/pseudo_labeler.py`, not split out separately).
+- [x] Confidence routing (see above).
 - [x] Label QA Agent (`agents/label_qa.py`, `tools/label_qa_checker.py`) — deterministic geometric/statistical checks (too small/large bbox, near-boundary, aspect ratio, missing label file, class imbalance) plus an optional reference-model disagreement check (IoU-matched against a YOLO model's predictions when `reference_model_path` is given). Standalone CLI (`agentic-mlops label-qa`) — not wired into `run-mvp`, since QA is normally a one-off gate after (pseudo-)labeling, not part of every training run. Never modifies labels.
 - [x] Suspicious labels report (`label_quality_report.json`/`.md`, status `passed`/`review_required`/`failed`).
 - [ ] Integration with CVAT / Label Studio / Azure ML Data Labeling.

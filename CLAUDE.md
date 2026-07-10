@@ -39,6 +39,9 @@ agentic-mlops structure-dataset /path/to/raw_video_frames \
   --output-dataset-path ./runs/structured --classes scratch,dent \
   --split-strategy grouped_by_source --group-by-regex '^(video\d+)_'
 
+# CLI: pre-label images with an approved YOLO model (standalone — not part of run-mvp)
+agentic-mlops pseudo-label /path/to/unlabeled_images --model-path models/approved/best.pt
+
 # CLI: validate a YOLO dataset
 agentic-mlops validate-dataset /path/to/dataset
 
@@ -133,7 +136,7 @@ This is a **sequential multi-agent MLOps pipeline** for YOLO object detection. A
 - `integrations/` — MLflow tracking hierarchy (see below) + model registry clients (Local/MLflow/Azure ML, see below); `azure_ml_client.py` only holds the SDK v2 `MLClient` factories (`DefaultAzureMLClientFactory` / `FakeAzureMLClientFactory`) — real Azure ML training/evaluation go through `tools/training_runner.py::AzureMLTrainingRunner` / `tools/evaluation_runner.py::AzureMLEvaluationRunner`, always injected by the CLI. `YoloTrainer`/`YoloEvaluator` raise a clear `RuntimeError` for `azure_train`/`azure_eval` mode if no runner was injected — there is no legacy fallback path anymore (removed 2026-07-10; it used to raise `NotImplementedError` via a now-deleted `AzureMLTrainingClient` stub)
 - `azure_jobs/` — entry scripts submitted to Azure ML as command jobs: `train_yolo.py` (training), `eval_yolo.py` (evaluation, writes `metrics.json` + plots). Both are self-contained (no `agentic_mlops` package import) since only this directory is uploaded as the job's code snapshot
 - `observability/` — JSON-line structured logging via `configure_logging()`; use `--json-logs` CLI flag; all modules use `get_logger(__name__)` with `extra=` for structured fields
-- `cli/main.py` — Typer app with nine commands: `data-intake`, `structure-dataset`, `validate-dataset`, `label-qa`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`
+- `cli/main.py` — Typer app with ten commands: `data-intake`, `structure-dataset`, `pseudo-label`, `validate-dataset`, `label-qa`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`
 
 ### Training and evaluation runners
 
@@ -221,6 +224,26 @@ a,b,c [--label-format coco --coco-annotations ...] [--split-strategy grouped_by_
 --group-by-regex ...]`. Writes `split_report.json`/`.md`. Deliberately **not** wired into
 `run-mvp` — same reasoning as Label QA / Data Intake.
 
+### Annotation / Pseudo-label Agent (standalone, not part of MVPWorkflow)
+
+`AnnotationAgent`/`PseudoLabeler` (`agents/annotation.py`, `tools/pseudo_labeler.py`,
+`contracts/annotation.py`) — the fourth of the 8 previously-unimplemented agents. Runs an
+approved/pre-trained YOLO model's `.predict()` over unlabeled/partially-labeled images and
+writes candidate labels to a **separate** `pseudo_labels/` directory — never merged into an
+existing dataset's `labels/` automatically (the spec's safety rule: pseudo-labels are not
+final without a review/audit policy). Confidence routing uses each image's *weakest*
+detection (the whole image only counts as high-confidence if every box clears the bar):
+`min_confidence >= auto_candidate` → `high` (still sample-audited by a human, never
+auto-final) / `>= human_review` → `medium` (human review) / below → `low` (hard/expert
+review). Zero detections also route to `medium` rather than being auto-accepted as an
+empty label, since there's no confidence signal to trust either way. When
+`existing_labels_path` is given (default `skip_existing_labels=True`), any image that
+already has a human label there is skipped entirely, never re-predicted or overwritten.
+`review_queue.json` lists only medium/low images. CLI: `agentic-mlops pseudo-label
+<images_path> --model-path ... [--auto-candidate-threshold ...] [--existing-labels-path
+...]`. Writes `pseudo_label_report.json`/`.md`. Deliberately **not** wired into `run-mvp`
+— same reasoning as the other Phase 0/3 agents.
+
 ### Label QA Agent (standalone, not part of MVPWorkflow)
 
 `LabelQAAgent`/`LabelQAChecker` (`agents/label_qa.py`, `tools/label_qa_checker.py`,
@@ -253,7 +276,7 @@ a (pseudo-)labeling pass, not part of every training run.
 ### Design documentation
 
 `agentic_mlops_workflow_docs/` contains the full agent and architecture specs:
-- `agents/` — 13 markdown specs (00–12) covering all planned agents, including the 5 not yet implemented (see below)
+- `agents/` — 13 markdown specs (00–12) covering all planned agents, including the 4 not yet implemented (see below)
 - `docs/` — 14 architecture docs (state machine, MVP scope, data contracts, etc.)
 - `prompts/` — Claude Code prompts used to bootstrap this project
 
@@ -268,7 +291,7 @@ status of every planned item). Still missing:
 - Azure ML pipeline components (multi-step AML pipeline instead of a single CommandJob per step)
 - Registering the dataset itself as an Azure ML Data Asset; storing artifacts in Blob/ADLS instead of local disk
 - VOC label format for Dataset Structuring (`LabelFormat` only has `yolo`/`coco`)
-- 5 remaining agents described in `agentic_mlops_workflow_docs/agents/` — Annotation/Pseudo-label, Dataset Versioning, Model Decision (partially covered by `HumanApprovalAgent` + `PromotionPolicy`), Deployment, Monitoring. `LabelQAAgent`, `DataIntakeAgent`, and `DatasetStructuringAgent` (see above) are the first three of the original 8 to be implemented. These correspond to the rest of Phase 3 (labeling loop) and Phase 4/5 in the backlog — not started.
+- 4 remaining agents described in `agentic_mlops_workflow_docs/agents/` — Dataset Versioning, Model Decision (partially covered by `HumanApprovalAgent` + `PromotionPolicy`), Deployment, Monitoring. `LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, and `AnnotationAgent` (see above) are the first four of the original 8 to be implemented. These correspond to Phase 4/5 in the backlog — not started.
 
 Note: `agentic_mlops_workflow_docs/docs/` and `agentic_mlops_workflow_docs/agents/` are
 design specs frozen at the project-bootstrap stage — they describe the full target

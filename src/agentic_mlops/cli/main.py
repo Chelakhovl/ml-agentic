@@ -239,6 +239,65 @@ def structure_dataset(
         raise typer.Exit(code=1)
 
 
+@app.command("pseudo-label")
+def pseudo_label(
+    images_path: str = typer.Argument(..., help="Path to unlabeled/partially-labeled images"),
+    model_path: str = typer.Option(
+        ..., "--model-path", help="Path to an approved YOLO model (.pt)"
+    ),
+    output_dir: str = typer.Option(
+        None,
+        "--output-dir",
+        help="Where to save pseudo-labels/report (default: <images_path>/pseudo_label_out)",
+    ),
+    auto_candidate_threshold: float = typer.Option(
+        0.90,
+        "--auto-candidate-threshold",
+        help="Min-detection confidence for the high-confidence bucket",
+    ),
+    human_review_threshold: float = typer.Option(
+        0.50,
+        "--human-review-threshold",
+        help="Min-detection confidence for the medium bucket (below -> low)",
+    ),
+    imgsz: int = typer.Option(640, "--imgsz", help="Inference image size"),
+    device: str = typer.Option("cpu", "--device", help="Inference device (cpu, 0, 0,1, ...)"),
+    existing_labels_path: str = typer.Option(
+        None,
+        "--existing-labels-path",
+        help="Directory of existing human labels — images already labeled there are skipped",
+    ),
+) -> None:
+    """Pre-label images with a YOLO model and route them into confidence buckets."""
+    from agentic_mlops.agents.annotation import AnnotationAgent  # noqa: PLC0415
+    from agentic_mlops.contracts.annotation import (  # noqa: PLC0415
+        AnnotationInput,
+        ConfidenceThresholds,
+    )
+
+    artifacts_dir = Path(output_dir) if output_dir else Path(images_path) / "pseudo_label_out"
+
+    agent = AnnotationAgent(artifacts_dir=artifacts_dir)
+    result = agent.run(
+        AnnotationInput(
+            images_path=images_path,
+            model_path=model_path,
+            confidence_thresholds=ConfidenceThresholds(
+                auto_candidate=auto_candidate_threshold,
+                human_review=human_review_threshold,
+            ),
+            imgsz=imgsz,
+            device=device,
+            existing_labels_path=existing_labels_path,
+        )
+    )
+
+    _print_annotation_result(result)
+
+    if not result.success:
+        raise typer.Exit(code=1)
+
+
 @app.command("label-qa")
 def label_qa(
     dataset_path: str = typer.Argument(..., help="Path to the YOLO dataset root directory"),
@@ -349,6 +408,34 @@ def _print_dataset_structuring_result(result) -> None:  # type: ignore[type-arg]
         console.print(f"\ndata.yaml: [bold]{result.data_yaml_path}[/bold]")
     if result.split_report_path:
         console.print(f"Split report: [bold]{result.split_report_path}[/bold]")
+
+
+def _print_annotation_result(result) -> None:  # type: ignore[type-arg]
+    status_color = "green" if result.success else "red"
+    label = "SUCCESS" if result.success else "FAILED"
+    console.print(f"\n[bold {status_color}]Pseudo-Label: {label}[/bold {status_color}]")
+    console.print(
+        f"Processed: {result.num_images_processed}  |  "
+        f"Skipped (already labeled): {result.num_images_skipped_existing}"
+    )
+
+    table = Table(title="Confidence Routing", show_header=True)
+    table.add_column("Bucket", style="cyan")
+    table.add_column("Count", justify="right")
+    table.add_row("high (auto-candidate)", str(result.high_confidence_count))
+    table.add_row("medium (human review)", str(result.medium_confidence_count))
+    table.add_row("low (hard sample)", str(result.low_confidence_count))
+    console.print(table)
+
+    if result.errors:
+        console.print("\n[bold red]Errors[/bold red]")
+        for err in result.errors:
+            console.print(f"  [red]FAIL[/red] {err}")
+
+    if result.pseudo_labels_path:
+        console.print(f"\nPseudo-labels: [bold]{result.pseudo_labels_path}[/bold]")
+    if result.review_queue_path:
+        console.print(f"Review queue: [bold]{result.review_queue_path}[/bold]")
 
 
 def _print_validation_result(result) -> None:  # type: ignore[type-arg]

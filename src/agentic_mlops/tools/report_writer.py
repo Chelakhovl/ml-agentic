@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agentic_mlops.contracts.annotation import AnnotationOutput
 from agentic_mlops.contracts.approvals import ApprovalOutput
 from agentic_mlops.contracts.data_intake import DataIntakeOutput
 from agentic_mlops.contracts.dataset_structuring import DatasetStructuringOutput
@@ -172,6 +173,38 @@ class ReportWriter:
         )
         return json_path, md_path
 
+    def write_annotation_report(
+        self,
+        output: AnnotationOutput,
+        artifacts_dir: Path,
+    ) -> tuple[Path, Path]:
+        """Write pseudo_label_report.json and .md. Returns (json_path, md_path)."""
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        json_path = artifacts_dir / "pseudo_label_report.json"
+        md_path = artifacts_dir / "pseudo_label_report.md"
+
+        payload: dict[str, Any] = {
+            "generated_at": datetime.now(tz=UTC).isoformat(),
+            "success": output.success,
+            "pseudo_labels_path": output.pseudo_labels_path,
+            "review_queue_path": output.review_queue_path,
+            "num_images_processed": output.num_images_processed,
+            "num_images_skipped_existing": output.num_images_skipped_existing,
+            "high_confidence_count": output.high_confidence_count,
+            "medium_confidence_count": output.medium_confidence_count,
+            "low_confidence_count": output.low_confidence_count,
+            "records": [r.model_dump() for r in output.records],
+            "message": output.message,
+        }
+
+        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        md_path.write_text(_annotation_report_md(payload), encoding="utf-8")
+
+        logger.info(
+            "Pseudo-label report written", extra={"json": str(json_path), "md": str(md_path)}
+        )
+        return json_path, md_path
+
     def write_dataset_structuring_report(
         self,
         output: DatasetStructuringOutput,
@@ -311,6 +344,57 @@ def _dataset_report_md(report: dict[str, Any]) -> str:
         lines.append("")
 
     lines += [f"**Recommendation:** `{report['recommendation']}`", ""]
+    return "\n".join(lines)
+
+
+def _annotation_report_md(report: dict[str, Any]) -> str:
+    status_label = "SUCCESS" if report["success"] else "FAILED"
+    lines = [
+        "# Pseudo-Label Report",
+        "",
+        f"**Status:** `{status_label}`  ",
+        f"**Generated:** {report['generated_at']}  ",
+        f"**Pseudo labels path:** `{report['pseudo_labels_path'] or 'N/A'}`  ",
+        f"**Review queue:** `{report['review_queue_path'] or 'N/A'}`",
+        "",
+        "## Confidence Routing",
+        "",
+        "| Bucket | Count |",
+        "|--------|-------|",
+        f"| High (auto-candidate, sample-audited) | {report['high_confidence_count']} |",
+        f"| Medium (human review) | {report['medium_confidence_count']} |",
+        f"| Low (hard sample / expert review) | {report['low_confidence_count']} |",
+        "",
+        "## Summary",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Images processed | {report['num_images_processed']} |",
+        f"| Images skipped (already labeled) | {report['num_images_skipped_existing']} |",
+        "",
+    ]
+
+    review_records = [
+        r for r in report["records"] if r["bucket"] in ("medium", "low")
+    ]
+    if review_records:
+        lines += [
+            "## Review Queue (medium/low confidence)",
+            "",
+            "| Image | Bucket | Detections | Min Conf | Mean Conf |",
+            "|-------|--------|------------|----------|-----------|",
+        ]
+        for r in review_records[:200]:
+            min_c = f"{r['min_confidence']:.2f}" if r["min_confidence"] is not None else "N/A"
+            mean_c = f"{r['mean_confidence']:.2f}" if r["mean_confidence"] is not None else "N/A"
+            lines.append(
+                f"| {r['image']} | {r['bucket']} | {r['num_detections']} | {min_c} | {mean_c} |"
+            )
+        if len(review_records) > 200:
+            lines.append(f"| ... | ... | ... | ... | {len(review_records) - 200} more not shown |")
+        lines.append("")
+
+    lines.append(f"**Message:** {report['message']}")
     return "\n".join(lines)
 
 
