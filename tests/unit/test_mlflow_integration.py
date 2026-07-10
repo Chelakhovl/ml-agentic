@@ -32,7 +32,6 @@ from agentic_mlops.contracts.datasets import DatasetValidationInput
 from agentic_mlops.contracts.evaluation import EvaluationInput, EvaluationMetrics, EvaluationMode
 from agentic_mlops.contracts.mlflow_config import MLflowConfig
 from agentic_mlops.contracts.training import TrainingConfig, TrainingInput, TrainingMode
-from agentic_mlops.integrations.azure_ml_client import FakeAzureMLTrainingClient
 from agentic_mlops.integrations.mlflow_client import (
     FakeMLflowTrackingClient,
     LocalMLflowTrackingClient,
@@ -399,7 +398,6 @@ class TestTrainingAgentMLflow:
 
         agent = TrainingAgent(
             artifacts_dir=tmp_path / "artifacts",
-            azure_client=FakeAzureMLTrainingClient(),
             mlflow_client=client,
             mlflow_run_id=run_id,
         )
@@ -428,7 +426,6 @@ class TestTrainingAgentMLflow:
 
         agent = TrainingAgent(
             artifacts_dir=tmp_path / "artifacts",
-            azure_client=FakeAzureMLTrainingClient(),
             mlflow_client=client,
             mlflow_run_id=run_id,
         )
@@ -455,7 +452,6 @@ class TestTrainingAgentMLflow:
 
         agent = TrainingAgent(
             artifacts_dir=tmp_path / "artifacts",
-            azure_client=FakeAzureMLTrainingClient(),
             mlflow_client=client,
             mlflow_run_id=run_id,
         )

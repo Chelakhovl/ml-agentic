@@ -68,10 +68,8 @@ from agentic_mlops.contracts.training import (
 )
 from agentic_mlops.integrations.azure_ml_client import (
     FakeAzureMLClientFactory,
-    FakeAzureMLTrainingClient,
     FakeMLClient,
 )
-from agentic_mlops.integrations.mlflow_client import FakeMLflowClient
 from agentic_mlops.tools.training_runner import AzureMLTrainingRunner
 from agentic_mlops.tools.yolo_trainer import YoloTrainer
 
@@ -703,12 +701,25 @@ class TestCompatibility:
         assert result.mode == TrainingMode.LOCAL_DRY_RUN
 
     def test_yolo_trainer_without_azure_runner_stores_none(self):
-        trainer = YoloTrainer(
-            azure_client=FakeAzureMLTrainingClient(),
-            mlflow_client=FakeMLflowClient(),
-            azure_runner=None,
-        )
+        trainer = YoloTrainer(azure_runner=None)
         assert trainer._azure_runner is None
+
+    def test_azure_train_without_azure_runner_raises(self, tmp_path):
+        dataset_path = tmp_path / "dataset"
+        dataset_path.mkdir(parents=True, exist_ok=True)
+        (dataset_path / "data.yaml").write_text("names:\n  0: cat\n", encoding="utf-8")
+
+        from agentic_mlops.contracts.training import TrainingConfig, TrainingInput
+
+        trainer = YoloTrainer(azure_runner=None)
+        cfg = TrainingConfig(mode=TrainingMode.AZURE_TRAIN)
+        inp = TrainingInput(
+            dataset_path=str(dataset_path),
+            data_yaml_path=str(dataset_path / "data.yaml"),
+            training_config=cfg,
+        )
+        with pytest.raises(RuntimeError, match="Azure ML training requires"):
+            trainer.run(inp, tmp_path / "artifacts")
 
     def test_dry_run_unaffected_by_azure_runner_none(self, tmp_path):
         dataset_path = tmp_path / "dataset"
@@ -717,11 +728,7 @@ class TestCompatibility:
 
         from agentic_mlops.contracts.training import TrainingConfig, TrainingInput
 
-        trainer = YoloTrainer(
-            azure_client=FakeAzureMLTrainingClient(),
-            mlflow_client=FakeMLflowClient(),
-            azure_runner=None,
-        )
+        trainer = YoloTrainer(azure_runner=None)
         cfg_dry = TrainingConfig(mode=TrainingMode.LOCAL_DRY_RUN)
         inp = TrainingInput(
             dataset_path=str(dataset_path),

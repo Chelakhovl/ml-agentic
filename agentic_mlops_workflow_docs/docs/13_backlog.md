@@ -1,6 +1,6 @@
 # Backlog
 
-> Statuses last verified 2026-07-10: 249/249 unit tests passing, `ruff check` clean.
+> Statuses last verified 2026-07-10: 250/250 unit tests passing, `ruff check` clean.
 
 ## Phase 1 — MVP
 
@@ -15,7 +15,7 @@
 - [x] Реализовать Evaluation Agent с mocked metrics для dry-run.
 - [x] Реализовать Decision Policy (`workflows/policies.py`).
 - [x] Реализовать Human Approval через CLI.
-- [x] Написать unit tests (249 tests across 11 files).
+- [x] Написать unit tests (250 tests across 11 files).
 - [x] Написать README с examples.
 - [x] Реализовать Model Registry Agent + local filesystem backend (pulled forward from Phase 4).
 
@@ -29,7 +29,7 @@
 - [ ] Register dataset as Azure ML Data Asset.
 - [ ] Store artifacts in Azure Blob/ADLS.
 - [x] Log metrics/artifacts to MLflow (via `LocalMLflowTrackingClient`, per-agent logging).
-- [ ] Retire the legacy stub path in `integrations/azure_ml_client.py::AzureMLTrainingClient` — dead code once `AzureMLTrainingRunner` is always injected.
+- [x] Retire the legacy stub path — `AzureMLTrainingClient`/`AzureMLTrainingClientBase`/`FakeAzureMLTrainingClient` deleted from `integrations/azure_ml_client.py`; `YoloTrainer` now only takes `azure_runner` and raises `RuntimeError` (not a silent `NotImplementedError` fallback) when azure_train is requested without one — matches `YoloEvaluator`'s existing pattern for azure_eval.
 
 ## Phase 3 — Labeling Loop
 

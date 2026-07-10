@@ -16,14 +16,7 @@ from agentic_mlops.contracts.training import (
     TrainingOutput,
     training_mode_to_runner,
 )
-from agentic_mlops.integrations.azure_ml_client import (
-    AzureMLTrainingClient,
-    AzureMLTrainingClientBase,
-)
-from agentic_mlops.integrations.mlflow_client import (
-    MLflowTrackingClientBase,
-    NoOpMLflowTrackingClient,
-)
+from agentic_mlops.integrations.mlflow_client import MLflowTrackingClientBase
 from agentic_mlops.tools.report_writer import ReportWriter
 from agentic_mlops.tools.yolo_trainer import YoloTrainer
 
@@ -45,20 +38,14 @@ class TrainingAgent(BaseAgent):
     def __init__(
         self,
         artifacts_dir: Path,
-        azure_client: AzureMLTrainingClientBase | None = None,
         mlflow_client: MLflowTrackingClientBase | None = None,
         mlflow_run_id: str | None = None,
         azure_runner: AzureMLTrainingRunner | None = None,
     ) -> None:
         super().__init__(artifacts_dir)
-        # mlflow_client is used by YoloTrainer for Azure training's own run tracking.
-        # mlflow_run_id is the parent workflow run for step-level logging.
-        effective_mlflow = mlflow_client or NoOpMLflowTrackingClient()
-        self._trainer = YoloTrainer(
-            azure_client=azure_client or AzureMLTrainingClient(),
-            mlflow_client=effective_mlflow,
-            azure_runner=azure_runner,
-        )
+        # mlflow_client/mlflow_run_id are the parent workflow run for step-level logging,
+        # used by _log_to_mlflow() below — YoloTrainer itself does no MLflow logging.
+        self._trainer = YoloTrainer(azure_runner=azure_runner)
         self._report_writer = ReportWriter()
         self._mlflow = mlflow_client
         self._mlflow_run_id = mlflow_run_id

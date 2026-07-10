@@ -15,7 +15,7 @@ Coverage matrix:
    12.  mode == LOCAL_TRAIN in output
    13.  FAILED status returned when model.train() raises an exception
    14.  Azure ML not called (LocalYOLOTrainingRunner accepts no azure/mlflow clients)
-   15.  YoloTrainer.run() delegates LOCAL_TRAIN to LocalYOLOTrainingRunner; FakeAzure not called
+   15.  YoloTrainer.run() delegates LOCAL_TRAIN to LocalYOLOTrainingRunner
    16.  CLI --runner fake → LOCAL_DRY_RUN (dry-run plan produced)
    17.  CLI --runner local-yolo → LOCAL_TRAIN mode
    18.  CLI --runner unknown → exit code 1
@@ -35,8 +35,6 @@ from agentic_mlops.contracts.training import (
     TrainingJobStatus,
     TrainingMode,
 )
-from agentic_mlops.integrations.azure_ml_client import FakeAzureMLTrainingClient
-from agentic_mlops.integrations.mlflow_client import FakeMLflowClient
 from agentic_mlops.tools.training_runner import LocalYOLOTrainingRunner
 from agentic_mlops.tools.yolo_trainer import YoloTrainer
 
@@ -289,10 +287,7 @@ def test_azure_ml_not_called(tmp_path, mock_yolo_cls, fake_save_dir):
 
 def test_yolo_trainer_local_train_uses_runner(tmp_path, mock_yolo_cls, fake_save_dir):
     MockYOLO, _ = mock_yolo_cls
-    trainer = YoloTrainer(
-        azure_client=FakeAzureMLTrainingClient(),
-        mlflow_client=FakeMLflowClient(),
-    )
+    trainer = YoloTrainer()
     inp = _make_input(tmp_path, mode=TrainingMode.LOCAL_TRAIN)
     artifacts_dir = tmp_path / "artifacts"
 
@@ -301,8 +296,6 @@ def test_yolo_trainer_local_train_uses_runner(tmp_path, mock_yolo_cls, fake_save
 
     assert result.mode == TrainingMode.LOCAL_TRAIN
     assert result.job_status == TrainingJobStatus.COMPLETED
-    # Azure client must not have been called
-    assert FakeAzureMLTrainingClient().submitted_jobs == []
 
 
 # ── 16-18. CLI --runner flag ──────────────────────────────────────────────────

@@ -6,7 +6,7 @@ Coverage matrix:
     3. Dry-run creates training_report.md
     4. TrainingConfig loads correctly from a YAML file
     5. TrainingAgent returns a structured TrainingOutput in dry-run
-    6. FakeAzureMLTrainingClient is NOT called in dry-run mode
+    6. azure_train mode without an injected azure_runner raises RuntimeError
     7. Training is NOT blocked when validation status is 'passed'
     8. Training is NOT blocked when validation status is 'warning'
     9. Training is NOT blocked when validation status is None (not provided)
@@ -27,15 +27,9 @@ from agentic_mlops.contracts.training import (
     TrainingJobStatus,
     TrainingMode,
 )
-from agentic_mlops.integrations.azure_ml_client import FakeAzureMLTrainingClient
 from agentic_mlops.integrations.mlflow_client import FakeMLflowClient
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def fake_azure() -> FakeAzureMLTrainingClient:
-    return FakeAzureMLTrainingClient()
 
 
 @pytest.fixture
@@ -45,12 +39,10 @@ def fake_mlflow() -> FakeMLflowClient:
 
 def _make_agent(
     tmp_path: Path,
-    fake_azure: FakeAzureMLTrainingClient,
     fake_mlflow: FakeMLflowClient,
 ) -> TrainingAgent:
     return TrainingAgent(
         artifacts_dir=tmp_path / "artifacts",
-        azure_client=fake_azure,
         mlflow_client=fake_mlflow,
     )
 
@@ -87,10 +79,9 @@ def _dry_run_input(
 
 def test_training_blocked_on_failed_validation(
     tmp_path: Path,
-    fake_azure: FakeAzureMLTrainingClient,
     fake_mlflow: FakeMLflowClient,
 ) -> None:
-    agent = _make_agent(tmp_path, fake_azure, fake_mlflow)
+    agent = _make_agent(tmp_path, fake_mlflow)
     inp = _dry_run_input(tmp_path, validation_status="failed")
 
     result = agent.run(inp)
@@ -98,8 +89,6 @@ def test_training_blocked_on_failed_validation(
     assert result.success is False
     assert result.job_status == TrainingJobStatus.CANCELLED
     assert "blocked" in result.message.lower() or "failed" in result.message.lower()
-    # Azure client must not have been called
-    assert fake_azure.submitted_jobs == []
 
 
 # ── 2. Dry-run creates training_request.json ──────────────────────────────────
@@ -107,10 +96,9 @@ def test_training_blocked_on_failed_validation(
 
 def test_dry_run_creates_training_request_json(
     tmp_path: Path,
-    fake_azure: FakeAzureMLTrainingClient,
     fake_mlflow: FakeMLflowClient,
 ) -> None:
-    agent = _make_agent(tmp_path, fake_azure, fake_mlflow)
+    agent = _make_agent(tmp_path, fake_mlflow)
     inp = _dry_run_input(tmp_path)
 
     result = agent.run(inp)
@@ -133,10 +121,9 @@ def test_dry_run_creates_training_request_json(
 
 def test_dry_run_creates_training_report_md(
     tmp_path: Path,
-    fake_azure: FakeAzureMLTrainingClient,
     fake_mlflow: FakeMLflowClient,
 ) -> None:
-    agent = _make_agent(tmp_path, fake_azure, fake_mlflow)
+    agent = _make_agent(tmp_path, fake_mlflow)
     inp = _dry_run_input(tmp_path)
 
     result = agent.run(inp)
@@ -183,10 +170,9 @@ def test_training_config_loads_from_yaml(tmp_path: Path) -> None:
 
 def test_training_agent_returns_structured_output(
     tmp_path: Path,
-    fake_azure: FakeAzureMLTrainingClient,
     fake_mlflow: FakeMLflowClient,
 ) -> None:
-    agent = _make_agent(tmp_path, fake_azure, fake_mlflow)
+    agent = _make_agent(tmp_path, fake_mlflow)
     inp = _dry_run_input(tmp_path)
 
     result = agent.run(inp)
@@ -203,22 +189,29 @@ def test_training_agent_returns_structured_output(
     assert result.report_path in result.artifacts
 
 
-# ── 6. FakeAzureMLTrainingClient not called in dry-run ────────────────────────
+# ── 6. azure_train without azure_runner raises RuntimeError ──────────────────
 
 
-def test_fake_azure_not_called_in_dry_run(
+def test_azure_train_without_azure_runner_raises(
     tmp_path: Path,
-    fake_azure: FakeAzureMLTrainingClient,
     fake_mlflow: FakeMLflowClient,
 ) -> None:
-    agent = _make_agent(tmp_path, fake_azure, fake_mlflow)
-    inp = _dry_run_input(tmp_path)
+    agent = _make_agent(tmp_path, fake_mlflow)
+    dataset_path = tmp_path / "dataset"
+    dataset_path.mkdir(parents=True, exist_ok=True)
+    data_yaml = dataset_path / "data.yaml"
+    data_yaml.write_text("names:\n  0: scratch\n", encoding="utf-8")
 
-    agent.run(inp)
-
-    assert fake_azure.submitted_jobs == [], (
-        "Azure ML client must not be called during local_dry_run"
+    cfg = TrainingConfig(model="yolo11m.pt", mode=TrainingMode.AZURE_TRAIN)
+    inp = TrainingInput(
+        dataset_path=str(dataset_path),
+        data_yaml_path=str(data_yaml),
+        training_config=cfg,
+        dataset_validation_status="passed",
     )
+
+    with pytest.raises(RuntimeError, match="Azure ML training requires"):
+        agent.run(inp)
 
 
 # ── 7-9. Training proceeds when validation is passed / warning / None ─────────
@@ -227,11 +220,10 @@ def test_fake_azure_not_called_in_dry_run(
 @pytest.mark.parametrize("status", ["passed", "warning", None])
 def test_training_proceeds_on_non_failed_status(
     tmp_path: Path,
-    fake_azure: FakeAzureMLTrainingClient,
     fake_mlflow: FakeMLflowClient,
     status: str | None,
 ) -> None:
-    agent = _make_agent(tmp_path, fake_azure, fake_mlflow)
+    agent = _make_agent(tmp_path, fake_mlflow)
     inp = _dry_run_input(tmp_path, validation_status=status)
 
     result = agent.run(inp)

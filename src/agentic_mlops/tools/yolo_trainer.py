@@ -2,7 +2,7 @@
 
 local_dry_run : writes training_request.json, no YOLO or Azure call.
 local_train   : delegates to LocalYOLOTrainingRunner (requires ultralytics).
-azure_train   : delegates to AzureMLTrainingRunner when injected; else falls back to stub.
+azure_train   : delegates to an injected AzureMLTrainingRunner (SDK v2).
 """
 
 from __future__ import annotations
@@ -20,8 +20,6 @@ from agentic_mlops.contracts.training import (
     TrainingMode,
     TrainingOutput,
 )
-from agentic_mlops.integrations.azure_ml_client import AzureMLTrainingClientBase
-from agentic_mlops.integrations.mlflow_client import MLflowClientBase
 from agentic_mlops.observability.logging import get_logger
 from agentic_mlops.tools.training_runner import LocalYOLOTrainingRunner
 
@@ -34,18 +32,14 @@ logger = get_logger(__name__)
 class YoloTrainer:
     """Executes YOLO training in the requested mode.
 
-    Inject FakeAzureMLTrainingClient / FakeMLflowClient for tests.
-    Inject AzureMLTrainingRunner via azure_runner to enable SDK v2 Azure jobs.
+    Inject AzureMLTrainingRunner via azure_runner to enable Azure ML SDK v2 jobs;
+    azure_train mode raises RuntimeError without one.
     """
 
     def __init__(
         self,
-        azure_client: AzureMLTrainingClientBase,
-        mlflow_client: MLflowClientBase,
         azure_runner: AzureMLTrainingRunner | None = None,
     ) -> None:
-        self._azure = azure_client
-        self._mlflow = mlflow_client
         self._azure_runner = azure_runner
 
     def run(self, inp: TrainingInput, artifacts_dir: Path) -> TrainingOutput:
@@ -127,50 +121,9 @@ class YoloTrainer:
     # ── Azure train ────────────────────────────────────────────────────────────
 
     def _azure_train(self, inp: TrainingInput, artifacts_dir: Path) -> TrainingOutput:
-        if self._azure_runner is not None:
-            return self._azure_runner.run(inp, artifacts_dir)
-        # Legacy stub path — raises NotImplementedError unless a real client was injected
-
-        cfg = inp.training_config
-        mlflow_run_id: str | None = None
-
-        try:
-            mlflow_run_id = self._mlflow.start_run(
-                experiment_name=cfg.project,
-                run_name=cfg.name,
+        if self._azure_runner is None:
+            raise RuntimeError(
+                "Azure ML training requires an AzureMLTrainingRunner — "
+                "pass --azure-config on the CLI or inject azure_runner."
             )
-            self._mlflow.log_params(mlflow_run_id, cfg.model_dump())
-        except NotImplementedError:
-            logger.warning("MLflow tracking skipped (stub client).")
-
-        job_id = self._azure.submit_training_job(
-            config=cfg,
-            dataset_path=inp.dataset_path,
-            data_yaml_path=inp.data_yaml_path,
-        )
-
-        status = self._azure.get_job_status(job_id)
-
-        artifact_paths = self._azure.get_job_artifacts(job_id, str(artifacts_dir))
-
-        if mlflow_run_id:
-            try:
-                self._mlflow.end_run(mlflow_run_id)
-            except NotImplementedError:
-                pass
-
-        training_artifacts = [
-            TrainingArtifact(name=Path(p).name, path=p, artifact_type="weights")
-            for p in artifact_paths
-        ]
-
-        return TrainingOutput(
-            success=status == TrainingJobStatus.COMPLETED,
-            message=f"Azure ML job {job_id} finished with status: {status}.",
-            job_id=job_id,
-            mlflow_run_id=mlflow_run_id,
-            job_status=status,
-            mode=TrainingMode.AZURE_TRAIN,
-            training_artifacts=training_artifacts,
-            artifacts=artifact_paths,
-        )
+        return self._azure_runner.run(inp, artifacts_dir)

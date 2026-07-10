@@ -1,7 +1,9 @@
 """Azure ML training integration.
 
-Production class: AzureMLTrainingClient — raises NotImplementedError.
-Test class: FakeAzureMLTrainingClient — returns deterministic fake data.
+SDK v2 client factories used by AzureMLTrainingRunner / AzureMLEvaluationRunner /
+AzureMLModelRegistryClient (see tools/training_runner.py, tools/evaluation_runner.py,
+integrations/model_registry.py) — this module only builds the MLClient connection,
+it does not submit jobs itself.
 
 Real implementation requires:
   pip install agentic-mlops-yolo[azure]
@@ -11,107 +13,13 @@ Real implementation requires:
 from __future__ import annotations
 
 import logging
-from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
-
-from agentic_mlops.contracts.training import TrainingConfig, TrainingJobStatus
 
 if TYPE_CHECKING:
     from agentic_mlops.contracts.azure_ml import AzureMLConfig
 
 logger = logging.getLogger(__name__)
-
-
-class AzureMLTrainingClientBase(ABC):
-    """Abstract interface for Azure ML training operations."""
-
-    @abstractmethod
-    def submit_training_job(
-        self,
-        config: TrainingConfig,
-        dataset_path: str,
-        data_yaml_path: str,
-    ) -> str:
-        """Submit a YOLO training job. Returns the Azure ML job ID."""
-        ...
-
-    @abstractmethod
-    def get_job_status(self, job_id: str) -> TrainingJobStatus:
-        """Return the current status of a submitted job."""
-        ...
-
-    @abstractmethod
-    def get_job_artifacts(self, job_id: str, output_dir: str) -> list[str]:
-        """Download job output artifacts to output_dir. Returns local file paths."""
-        ...
-
-
-class AzureMLTrainingClient(AzureMLTrainingClientBase):
-    """Production Azure ML client stub.
-
-    All methods raise NotImplementedError until azure-ai-ml is wired up.
-    """
-
-    def __init__(self) -> None:
-        # TODO: from azure.ai.ml import MLClient
-        # TODO: from azure.identity import DefaultAzureCredential
-        # TODO: self._client = MLClient(
-        #     credential=DefaultAzureCredential(),
-        #     subscription_id=os.environ["AZURE_SUBSCRIPTION_ID"],
-        #     resource_group_name=os.environ["AZURE_RESOURCE_GROUP"],
-        #     workspace_name=os.environ["AZURE_ML_WORKSPACE"],
-        # )
-        logger.warning("AzureMLTrainingClient is a stub — no real Azure connection.")
-
-    def submit_training_job(
-        self,
-        config: TrainingConfig,
-        dataset_path: str,
-        data_yaml_path: str,
-    ) -> str:
-        # TODO: build a CommandJob from config and submit via self._client.jobs.create_or_update
-        raise NotImplementedError(
-            "Azure ML training is not implemented. Set mode=local_dry_run or local_train."
-        )
-
-    def get_job_status(self, job_id: str) -> TrainingJobStatus:
-        raise NotImplementedError
-
-    def get_job_artifacts(self, job_id: str, output_dir: str) -> list[str]:
-        raise NotImplementedError
-
-
-class FakeAzureMLTrainingClient(AzureMLTrainingClientBase):
-    """In-memory fake for unit tests.
-
-    Records every call so tests can assert on interactions.
-    """
-
-    def __init__(self) -> None:
-        self.submitted_jobs: list[dict] = []
-        self.status_map: dict[str, TrainingJobStatus] = {}
-        self._next_job_id = 0
-
-    def submit_training_job(
-        self,
-        config: TrainingConfig,
-        dataset_path: str,
-        data_yaml_path: str,
-    ) -> str:
-        job_id = f"fake_job_{self._next_job_id:04d}"
-        self._next_job_id += 1
-        self.submitted_jobs.append(
-            {"job_id": job_id, "config": config, "dataset_path": dataset_path}
-        )
-        self.status_map[job_id] = TrainingJobStatus.COMPLETED
-        return job_id
-
-    def get_job_status(self, job_id: str) -> TrainingJobStatus:
-        return self.status_map.get(job_id, TrainingJobStatus.FAILED)
-
-    def get_job_artifacts(self, job_id: str, output_dir: str) -> list[str]:
-        return []
 
 
 # ── SDK v2 client factories ────────────────────────────────────────────────────
