@@ -892,3 +892,164 @@ class TestNoMLflowPackageRequired:
         """MLflowConfig is a pure Pydantic model — no mlflow dependency."""
         cfg = MLflowConfig(enabled=False)
         assert not cfg.enabled
+
+
+# ── 11. OrchestratorWorkflow MLflow tracking ────────────────────────────────────
+# Orchestrator has no factory-injection seam (unlike MVPWorkflow) — it always
+# builds real agents, so these run the real dataset_validation/training/
+# evaluation/approval agents in fake/dry-run mode against a real tmp dataset.
+
+from agentic_mlops.contracts.orchestrator import OrchestratorInput  # noqa: E402
+from agentic_mlops.workflows.orchestrator import OrchestratorWorkflow  # noqa: E402
+
+
+def _make_orchestrator_dataset(tmp_path: Path) -> Path:
+    dataset = tmp_path / "dataset"
+    dataset.mkdir(parents=True, exist_ok=True)
+    make_valid_dataset(dataset, num_classes=3)
+    return dataset
+
+
+def _make_orchestrator_input(tmp_path: Path, **overrides: object) -> OrchestratorInput:
+    dataset = _make_orchestrator_dataset(tmp_path)
+    training_cfg = tmp_path / "training.yaml"
+    training_cfg.write_text(
+        "epochs: 1\nimgsz: 640\nbatch: 2\nname: mlflow_test\n", encoding="utf-8"
+    )
+    fields: dict = {
+        "workflow_id": "wf_mlflow_test",
+        "runs_dir": str(tmp_path / "runs"),
+        "dataset_path": str(dataset),
+        "data_yaml_path": str(dataset / "data.yaml"),
+        "training_config_path": str(training_cfg),
+        "steps": ["dataset_validation", "training", "evaluation", "approval"],
+        "interactive_approval": False,
+    }
+    fields.update(overrides)
+    return OrchestratorInput.model_validate(fields)
+
+
+class TestOrchestratorWorkflowMLflow:
+    def test_creates_parent_run_when_enabled(self, tmp_path: Path) -> None:
+        client = _fake_client()
+        config = MLflowConfig(enabled=True, experiment_name="orch-exp", run_name_prefix="orch")
+
+        workflow = OrchestratorWorkflow(mlflow_client=client, mlflow_config=config)
+        result = workflow.run(
+            _make_orchestrator_input(
+                tmp_path, approval_action=ApprovalAction.APPROVE_MODEL, force_approve=True
+            )
+        )
+
+        assert result.mlflow_run_id is not None
+        assert result.mlflow_run_id in client.runs
+        assert result.mlflow_experiment_name == "orch-exp"
+
+    def test_run_ends_with_finished_on_success(self, tmp_path: Path) -> None:
+        client = _fake_client()
+        config = MLflowConfig(enabled=True)
+
+        workflow = OrchestratorWorkflow(mlflow_client=client, mlflow_config=config)
+        result = workflow.run(
+            _make_orchestrator_input(
+                tmp_path, approval_action=ApprovalAction.APPROVE_MODEL, force_approve=True
+            )
+        )
+
+        assert result.status == "completed"
+        assert client.runs[result.mlflow_run_id]["status"] == "finished"
+
+    def test_run_stays_open_on_pending_approval(self, tmp_path: Path) -> None:
+        client = _fake_client()
+        config = MLflowConfig(enabled=True)
+
+        workflow = OrchestratorWorkflow(mlflow_client=client, mlflow_config=config)
+        result = workflow.run(_make_orchestrator_input(tmp_path))  # no approval_action -> pauses
+
+        assert result.status == "pending_approval"
+        assert client.runs[result.mlflow_run_id]["status"] == "running"
+
+    def test_resume_reuses_same_mlflow_run_and_ends_it(self, tmp_path: Path) -> None:
+        client = _fake_client()
+        config = MLflowConfig(enabled=True)
+        workflow = OrchestratorWorkflow(mlflow_client=client, mlflow_config=config)
+
+        inp = _make_orchestrator_input(tmp_path)
+        first = workflow.run(inp)
+        run_id = first.mlflow_run_id
+
+        resumed = inp.model_copy(
+            update={
+                "resume": True,
+                "approval_action": ApprovalAction.APPROVE_MODEL,
+                "force_approve": True,
+            }
+        )
+        second = workflow.run(resumed)
+
+        assert second.mlflow_run_id == run_id
+        assert client.runs[run_id]["status"] == "finished"
+
+    def test_run_ends_with_failed_when_step_fails(self, tmp_path: Path) -> None:
+        client = _fake_client()
+        config = MLflowConfig(enabled=True)
+        bad_dataset = tmp_path / "empty_dataset"
+        bad_dataset.mkdir(parents=True)
+
+        workflow = OrchestratorWorkflow(mlflow_client=client, mlflow_config=config)
+        result = workflow.run(
+            _make_orchestrator_input(
+                tmp_path,
+                dataset_path=str(bad_dataset),
+                data_yaml_path=str(bad_dataset / "data.yaml"),
+                steps=["dataset_validation"],
+            )
+        )
+
+        assert result.status == "failed"
+        assert client.runs[result.mlflow_run_id]["status"] == "failed"
+
+    def test_mlflow_disabled_by_default(self, tmp_path: Path) -> None:
+        workflow = OrchestratorWorkflow()
+        result = workflow.run(
+            _make_orchestrator_input(
+                tmp_path, approval_action=ApprovalAction.APPROVE_MODEL, force_approve=True
+            )
+        )
+        assert result.mlflow_run_id is None
+        assert result.status == "completed"
+
+    def test_agent_level_tags_logged_under_parent_run(self, tmp_path: Path) -> None:
+        client = _fake_client()
+        config = MLflowConfig(enabled=True)
+
+        workflow = OrchestratorWorkflow(mlflow_client=client, mlflow_config=config)
+        result = workflow.run(
+            _make_orchestrator_input(
+                tmp_path, approval_action=ApprovalAction.APPROVE_MODEL, force_approve=True
+            )
+        )
+
+        tags = client.runs[result.mlflow_run_id]["tags"]
+        # dataset_validation, training, evaluation, and approval all tag the
+        # shared parent run — proves individual agents' own _log_to_mlflow ran.
+        assert "validation_status" in tags
+        assert "training_status" in tags
+        assert "recommendation" in tags
+        assert "approval_status" in tags
+        assert tags["workflow_status"] == "completed"
+
+    def test_report_artifacts_logged_when_log_reports_true(self, tmp_path: Path) -> None:
+        client = _fake_client()
+        config = MLflowConfig(enabled=True, log_reports=True)
+
+        workflow = OrchestratorWorkflow(mlflow_client=client, mlflow_config=config)
+        result = workflow.run(
+            _make_orchestrator_input(
+                tmp_path, approval_action=ApprovalAction.APPROVE_MODEL, force_approve=True
+            )
+        )
+
+        artifacts = client.runs[result.mlflow_run_id]["artifacts"]
+        assert any("orchestrator_report.json" in a for a in artifacts)
+        assert any("orchestrator_report.md" in a for a in artifacts)

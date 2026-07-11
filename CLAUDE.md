@@ -141,14 +141,20 @@ agentic-mlops run-mvp \
   --azure-config configs/azure_ml.yaml \
   --no-dry-run --no-interactive --approval-action approve_model
 
-# CLI: run the full, configurable Orchestrator pipeline (any subset of the 10
+# CLI: run the full, configurable Orchestrator pipeline (any subset of the 11
 # pipeline steps, all config read from one YAML file — see
-# configs/orchestrator.example.yaml). Pauses at the human approval gate when
-# no approval_action is configured; re-run with --resume once one is set.
+# configs/orchestrator.example.yaml). Pauses at a human approval gate when
+# no action is configured; re-run with --resume once one is set.
 agentic-mlops run-workflow \
   --workflow-id wf_001 --config configs/orchestrator.yaml --runs-dir runs
 agentic-mlops run-workflow \
   --workflow-id wf_001 --config configs/orchestrator.yaml --runs-dir runs --resume
+
+# CLI: same, tracked as one parent MLflow run across the whole workflow
+# (persists across --resume; only ends on a terminal status)
+agentic-mlops run-workflow \
+  --workflow-id wf_001 --config configs/orchestrator.yaml --runs-dir runs \
+  --enable-mlflow --mlflow-config configs/mlflow.example.yaml
 ```
 
 Copy `configs/training.example.yaml`, `configs/promotion_policy.example.yaml`,
@@ -527,20 +533,33 @@ gate); H5 Model Approval is `HumanApprovalAgent` (a real blocking gate); H6
 Production Release is `DeploymentAgent`'s existing production gate (the orchestrator
 just surfaces its `blocked` result).
 
+**MLflow tracking**: `OrchestratorWorkflow(mlflow_client=, mlflow_config=)` — same
+pattern as `MVPWorkflow`, tracking the whole run as one parent run. No new
+per-agent logging code was needed: every one of the 11 step agents already
+accepted `mlflow_client=`/`mlflow_run_id=` (built originally for `MVPWorkflow`);
+`_mlflow_kwargs()` just injects the shared run id into whichever agent each
+`_step_*` method constructs. The run id is persisted in `state.json`, so
+`--resume` after a pause or failure logs into the *same* run rather than
+starting a new one. The run only ends (`FINISHED`/`FAILED`) on a terminal
+status — a `PENDING_APPROVAL` pause leaves it open, matching the "resume
+continues the same story" semantics `--resume` already has for everything else.
+Disabled by default; enable with `--enable-mlflow --mlflow-config
+configs/mlflow.example.yaml`.
+
 **Not implemented**: a real Notification client (Teams/Slack/Email — state
-transitions are only visible via `audit_log.jsonl` and structured logs); MLflow
-tracking inside `OrchestratorWorkflow` itself (each step's own CLI command, or
-`run-mvp`, still supports `--enable-mlflow` independently).
+transitions are only visible via `audit_log.jsonl` and structured logs).
 
 CLI: `agentic-mlops run-workflow --workflow-id <id> --config
-configs/orchestrator.yaml [--runs-dir runs] [--resume]` — unlike `run-mvp` (fixed
-5-step chain, one CLI flag per field), every step's configuration is read from a
+configs/orchestrator.yaml [--runs-dir runs] [--resume] [--enable-mlflow
+--mlflow-config configs/mlflow.example.yaml]` — unlike `run-mvp` (fixed 5-step
+chain, one CLI flag per field), every step's configuration is read from a
 single YAML file (`OrchestratorInput.from_yaml()`, same pattern as
 `TrainingConfig`/`AzureMLConfig`/`MLflowConfig`); only `--workflow-id`,
-`--runs-dir`, and `--resume` are separate CLI flags since they change per
-invocation. See `configs/orchestrator.example.yaml`. Writes
-`orchestrator_report.json`/`.md` (via `ReportWriter.write_orchestrator_report()`)
-into `<runs_dir>/<workflow_id>/artifacts/`, alongside `state.json`/`audit_log.jsonl`
+`--runs-dir`, `--resume`, and the MLflow flags are separate CLI flags since
+they change per invocation or are cross-cutting. See
+`configs/orchestrator.example.yaml`. Writes `orchestrator_report.json`/`.md`
+(via `ReportWriter.write_orchestrator_report()`) into
+`<runs_dir>/<workflow_id>/artifacts/`, alongside `state.json`/`audit_log.jsonl`
 one level up.
 
 ### MVPWorkflow factory injection
@@ -578,7 +597,6 @@ status of every planned item). Still missing:
 - Azure Monitor / Application Insights integration for `MonitoringAgent` — log ingestion is a local JSONL file only, not live endpoint metrics/traces; hard samples are surfaced in a manifest for manual triage, not automatically fed back into Data Intake
 - All 8 originally-unimplemented agents (`LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, `AnnotationAgent`, `DatasetVersioningAgent`, `ModelDecisionAgent`, `DeploymentAgent`, `MonitoringAgent`) **and** the top-level Orchestrator Agent (`OrchestratorWorkflow`, see "Orchestrator" above) are now implemented — every spec in `agentic_mlops_workflow_docs/agents/` has a corresponding implementation.
 - Real Notification client (Teams/Slack/Email) for the Orchestrator — state transitions are only visible via `audit_log.jsonl` and structured logs, not pushed anywhere
-- MLflow tracking inside `OrchestratorWorkflow` itself — each step's own CLI command (or `run-mvp`) still supports `--enable-mlflow` independently; `run-workflow` does not yet inject an MLflow client into the agents it invokes
 
 Note: `agentic_mlops_workflow_docs/docs/` and `agentic_mlops_workflow_docs/agents/` are
 design specs frozen at the project-bootstrap stage — they describe the full target

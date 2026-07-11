@@ -183,3 +183,6 @@ class OrchestratorOutput(ToolResult):
     pending_approval_id: str | None = None
     state_path: str | None = None
     audit_log_path: str | None = None
+    mlflow_run_id: str | None = None
+    mlflow_experiment_name: str | None = None
+    mlflow_tracking_uri: str | None = None

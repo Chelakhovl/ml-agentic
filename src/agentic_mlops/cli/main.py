@@ -1715,13 +1715,23 @@ def run_workflow(
         False, "--resume", help="Resume a previously started workflow_id, skipping completed steps"
     ),
     trigger: str = typer.Option("manual", "--trigger", help="What triggered this run"),
+    mlflow_config: str = typer.Option(
+        None, "--mlflow-config", help="Path to MLflow config YAML"
+    ),
+    enable_mlflow: bool = typer.Option(
+        False,
+        "--enable-mlflow/--disable-mlflow",
+        help="Enable MLflow tracking as one parent run across all steps (default: disabled)",
+    ),
 ) -> None:
     """Run the full, configurable Orchestrator pipeline (any subset of PIPELINE_STEPS).
 
     Unlike `run-mvp` (fixed 5-step chain), this reads step selection and every
     step's config from a single YAML file, persists state.json/audit_log.jsonl
     under --runs-dir/<workflow-id>/, and supports --resume after a pause (e.g.
-    at the human approval gate) or a failure.
+    at the human approval gate) or a failure. With --enable-mlflow, the whole
+    run (including any --resume continuations) is tracked as one parent MLflow
+    run — the run_id is persisted in state.json.
     """
     from agentic_mlops.contracts.orchestrator import OrchestratorInput  # noqa: PLC0415
     from agentic_mlops.workflows.orchestrator import OrchestratorWorkflow  # noqa: PLC0415
@@ -1738,7 +1748,12 @@ def run_workflow(
         console.print(f"[red]Cannot load orchestrator config '{config}': {exc}[/red]")
         raise typer.Exit(code=1)
 
-    result = OrchestratorWorkflow().run(inp)
+    mlflow_client, mlflow_cfg = _resolve_mlflow(mlflow_config, enable_mlflow)
+
+    result = OrchestratorWorkflow(
+        mlflow_client=mlflow_client if mlflow_cfg.enabled else None,
+        mlflow_config=mlflow_cfg if mlflow_cfg.enabled else None,
+    ).run(inp)
 
     _print_orchestrator_result(result)
 
@@ -1786,6 +1801,11 @@ def _print_orchestrator_result(result) -> None:  # type: ignore[type-arg]
     if result.state_path:
         console.print(f"\nState file : [bold]{result.state_path}[/bold]")
         console.print(f"Audit log  : [bold]{result.audit_log_path}[/bold]")
+
+    if result.mlflow_run_id:
+        console.print(f"\nMLflow experiment : [bold]{result.mlflow_experiment_name}[/bold]")
+        console.print(f"MLflow run ID     : [bold]{result.mlflow_run_id}[/bold]")
+        console.print(f"MLflow tracking   : [bold]{result.mlflow_tracking_uri}[/bold]")
 
 
 def _print_mvp_summary(result) -> None:  # type: ignore[type-arg]

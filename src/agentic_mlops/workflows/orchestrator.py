@@ -19,11 +19,17 @@ policies и создает human approval gates." Concretely, this class:
     human saying "no" is a valid business outcome, not a system error.
   - supports --resume: a workflow_id with a saved state.json skips steps
     already recorded as completed and picks up where it left off
-  - has NO real Notification client (Teams/Slack/Email) and does NOT wire
-    MLflow tracking into sub-agents yet — both are documented gaps, same
-    "no real infra beyond what's needed" pattern as every other standalone
-    agent's missing backend. Use each step's own CLI command with
-    --enable-mlflow, or `run-mvp`, for MLflow-tracked runs of the 5 core steps.
+  - optionally tracks the whole run as one parent MLflow run (mlflow_client=
+    + mlflow_config=, same pattern as MVPWorkflow): every agent invoked logs
+    under it (each agent already supports mlflow_client=/mlflow_run_id=
+    injection — nothing new needed there), the run_id is persisted in
+    state.json so a --resume after a pause/failure logs into the SAME run
+    rather than starting a new one, and the run ends only on a terminal
+    status (COMPLETED/FAILED/BLOCKED) — a PENDING_APPROVAL pause leaves it
+    open. Disabled by default; enable via --mlflow-config/--enable-mlflow.
+  - has NO real Notification client (Teams/Slack/Email) — a documented gap,
+    same "no real infra beyond what's needed" pattern as every other
+    standalone agent's missing backend.
 
 Deliberately NOT a BaseAgent subclass, matching MVPWorkflow's own placement in
 workflows/ rather than agents/ — this chains other agents, it doesn't wrap one
@@ -70,6 +76,7 @@ from agentic_mlops.contracts.dataset_versioning import DatasetVersioningInput
 from agentic_mlops.contracts.datasets import DatasetValidationInput
 from agentic_mlops.contracts.deployment import DeploymentBackend, DeploymentInput
 from agentic_mlops.contracts.evaluation import EvaluationInput, EvaluationMode
+from agentic_mlops.contracts.mlflow_config import MLflowConfig
 from agentic_mlops.contracts.model_decision import ModelDecisionInput
 from agentic_mlops.contracts.model_registry import ModelRegistrationInput, RegistryBackend
 from agentic_mlops.contracts.orchestrator import (
@@ -86,6 +93,7 @@ from agentic_mlops.contracts.training_approval import (
     TrainingApprovalInput,
 )
 from agentic_mlops.integrations.azure_ml_online_endpoint import AzureMLOnlineEndpointDeployer
+from agentic_mlops.integrations.mlflow_client import MLflowTrackingClientBase
 from agentic_mlops.integrations.model_registry import (
     AzureMLModelRegistryClient,
     ModelRegistryClientBase,
@@ -135,9 +143,44 @@ def _skip(reason: str) -> _StepOutcome:
 class OrchestratorWorkflow:
     """Chains a configurable subset of PIPELINE_STEPS with state + audit persistence."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        mlflow_client: MLflowTrackingClientBase | None = None,
+        mlflow_config: MLflowConfig | None = None,
+    ) -> None:
         self.logger = get_logger(self.__class__.__name__)
         self._report_writer = ReportWriter()
+        self._mlflow = mlflow_client
+        self._mlflow_config = mlflow_config
+        # Set fresh at the top of every run() call; read by _mlflow_kwargs()
+        # so every _step_* method can inject tracking without threading an
+        # extra parameter through all 11 of them.
+        self._current_mlflow_run_id: str | None = None
+
+    def _mlflow_kwargs(self) -> dict[str, Any]:
+        if not self._current_mlflow_run_id:
+            return {}
+        return {"mlflow_client": self._mlflow, "mlflow_run_id": self._current_mlflow_run_id}
+
+    def _resolve_mlflow_run(self, state: dict) -> str | None:
+        existing = state.get("mlflow_run_id")
+        if existing:
+            return existing
+        if not (self._mlflow and self._mlflow_config and self._mlflow_config.enabled):
+            return None
+        run_name = f"{self._mlflow_config.run_name_prefix}-{state['workflow_id']}"
+        run_id = self._mlflow.start_run(self._mlflow_config.experiment_name, run_name)
+        self._mlflow.log_tags(
+            run_id,
+            {
+                "workflow_name": "orchestrator",
+                "workflow_id": state["workflow_id"],
+                "steps": ",".join(state.get("steps", [])),
+            },
+        )
+        state["mlflow_run_id"] = run_id
+        return run_id
 
     def run(self, inp: OrchestratorInput) -> OrchestratorOutput:
         store = WorkflowStateStore(Path(inp.runs_dir), inp.workflow_id)
@@ -201,6 +244,7 @@ class OrchestratorWorkflow:
         step_outputs: dict[str, dict] = state.get("step_outputs", {})
         step_status: dict[str, str] = state.get("step_status", {})
         all_artifacts: list[str] = list(state.get("artifacts", []))
+        self._current_mlflow_run_id = self._resolve_mlflow_run(state)
 
         azure_config: AzureMLConfig | None = None
         if inp.azure_config_path:
@@ -344,7 +388,9 @@ class OrchestratorWorkflow:
             return _StepOutcome(
                 False, "FAILED", errors=["raw_data_path is required for the data_intake step."]
             )
-        agent = DataIntakeAgent(artifacts_dir=output_root / "data_intake")
+        agent = DataIntakeAgent(
+            artifacts_dir=output_root / "data_intake", **self._mlflow_kwargs()
+        )
         result = agent.run(
             DataIntakeInput(
                 raw_data_path=inp.raw_data_path,
@@ -373,7 +419,7 @@ class OrchestratorWorkflow:
                 False, "FAILED", errors=["classes is required for the dataset_structuring step."]
             )
         step_dir = output_root / "dataset_structuring"
-        agent = DatasetStructuringAgent(artifacts_dir=step_dir)
+        agent = DatasetStructuringAgent(artifacts_dir=step_dir, **self._mlflow_kwargs())
         result = agent.run(
             DatasetStructuringInput(
                 raw_data_path=inp.raw_data_path,
@@ -404,7 +450,9 @@ class OrchestratorWorkflow:
         self, inp: OrchestratorInput, output_root: Path, step_outputs: dict, azure_config
     ) -> _StepOutcome:
         dataset_path, data_yaml_path = self._effective_dataset(step_outputs, inp)
-        agent = DatasetValidationAgent(artifacts_dir=output_root / "dataset_validation")
+        agent = DatasetValidationAgent(
+            artifacts_dir=output_root / "dataset_validation", **self._mlflow_kwargs()
+        )
         result = agent.run(
             DatasetValidationInput(
                 dataset_path=dataset_path,
@@ -425,7 +473,9 @@ class OrchestratorWorkflow:
     ) -> _StepOutcome:
         dataset_path, _ = self._effective_dataset(step_outputs, inp)
         validation = step_outputs.get("dataset_validation")
-        agent = DatasetVersioningAgent(artifacts_dir=output_root / "dataset_versioning")
+        agent = DatasetVersioningAgent(
+            artifacts_dir=output_root / "dataset_versioning", **self._mlflow_kwargs()
+        )
         result = agent.run(
             DatasetVersioningInput(
                 dataset_path=dataset_path,
@@ -473,7 +523,7 @@ class OrchestratorWorkflow:
             )
 
         step_dir = output_root / "training_approval"
-        agent = TrainingApprovalAgent(artifacts_dir=step_dir)
+        agent = TrainingApprovalAgent(artifacts_dir=step_dir, **self._mlflow_kwargs())
         result = agent.run(
             TrainingApprovalInput(
                 dataset_report_path=validation["report_path"],
@@ -527,7 +577,9 @@ class OrchestratorWorkflow:
 
         validation = step_outputs.get("dataset_validation")
         step_dir = output_root / "training"
-        agent = TrainingAgent(artifacts_dir=step_dir, azure_runner=azure_runner)
+        agent = TrainingAgent(
+            artifacts_dir=step_dir, azure_runner=azure_runner, **self._mlflow_kwargs()
+        )
         result = agent.run(
             TrainingInput(
                 dataset_path=dataset_path,
@@ -581,7 +633,9 @@ class OrchestratorWorkflow:
             azure_runner = AzureMLEvaluationRunner(azure_config)
 
         step_dir = output_root / "evaluation"
-        agent = EvaluationAgent(artifacts_dir=step_dir, azure_runner=azure_runner)
+        agent = EvaluationAgent(
+            artifacts_dir=step_dir, azure_runner=azure_runner, **self._mlflow_kwargs()
+        )
         result = agent.run(
             EvaluationInput(
                 dataset_path=dataset_path,
@@ -616,7 +670,9 @@ class OrchestratorWorkflow:
             )
         if evaluation.get("skipped"):
             return _skip("evaluation was skipped")
-        agent = ModelDecisionAgent(artifacts_dir=output_root / "model_decision")
+        agent = ModelDecisionAgent(
+            artifacts_dir=output_root / "model_decision", **self._mlflow_kwargs()
+        )
         result = agent.run(
             ModelDecisionInput(
                 evaluation_report_path=evaluation["report_path"],
@@ -654,7 +710,7 @@ class OrchestratorWorkflow:
             )
 
         step_dir = output_root / "approval"
-        agent = HumanApprovalAgent(artifacts_dir=step_dir)
+        agent = HumanApprovalAgent(artifacts_dir=step_dir, **self._mlflow_kwargs())
         result = agent.run(
             ApprovalInput(
                 evaluation_output_path=evaluation["report_path"],
@@ -701,7 +757,9 @@ class OrchestratorWorkflow:
             registry_client = AzureMLModelRegistryClient(azure_config)
 
         agent = ModelRegistryAgent(
-            artifacts_dir=output_root / "model_registry", registry_client=registry_client
+            artifacts_dir=output_root / "model_registry",
+            registry_client=registry_client,
+            **self._mlflow_kwargs(),
         )
         result = agent.run(
             ModelRegistrationInput(
@@ -788,7 +846,9 @@ class OrchestratorWorkflow:
                     ],
                 )
 
-        agent = DeploymentAgent(artifacts_dir=output_root / "deployment", deployer=deployer)
+        agent = DeploymentAgent(
+            artifacts_dir=output_root / "deployment", deployer=deployer, **self._mlflow_kwargs()
+        )
         result = agent.run(
             DeploymentInput(
                 model_path=model_path,
@@ -892,6 +952,7 @@ class OrchestratorWorkflow:
                 "current_state": state.get("current_state"),
             }
         )
+        mlflow_run_id = state.get("mlflow_run_id")
         output = OrchestratorOutput(
             success=status in (OrchestratorStatus.COMPLETED, OrchestratorStatus.PENDING_APPROVAL),
             message=message,
@@ -905,9 +966,25 @@ class OrchestratorWorkflow:
             audit_log_path=str(store.audit_log_path),
             artifacts=list(artifacts),
             errors=errors or [],
+            mlflow_run_id=mlflow_run_id,
+            mlflow_experiment_name=(
+                self._mlflow_config.experiment_name if self._mlflow_config else None
+            ),
+            mlflow_tracking_uri=self._mlflow_config.tracking_uri if self._mlflow_config else None,
         )
         json_path, md_path = self._report_writer.write_orchestrator_report(
             output, store.workflow_dir / "artifacts"
         )
         output.artifacts += [str(json_path), str(md_path)]
+
+        if self._mlflow and mlflow_run_id:
+            if self._mlflow_config and self._mlflow_config.log_reports:
+                for p in (str(json_path), str(md_path)):
+                    self._mlflow.log_artifact(mlflow_run_id, p)
+            # A pause is not terminal — leave the run open so --resume logs into it.
+            if status != OrchestratorStatus.PENDING_APPROVAL:
+                self._mlflow.log_tags(mlflow_run_id, {"workflow_status": status.value})
+                final_status = "FINISHED" if status == OrchestratorStatus.COMPLETED else "FAILED"
+                self._mlflow.end_run(mlflow_run_id, status=final_status)
+
         return output
