@@ -26,6 +26,13 @@ Coverage matrix:
    23.  CLI: deploy-model exits 1 on production without approval (blocked)
    24.  CLI: deploy-model exits 1 on invalid --target
    25.  CLI: deploy-model exits 1 on invalid --export-format
+   26.  backend='azure_ml' without an injected azure_deployer -> failed
+   27.  backend='azure_ml' delegates to the injected azure_deployer
+   28.  backend='azure_ml' still enforces the H6 production gate before delegating
+   29.  backend='local' without model_path -> failed
+   30.  CLI: deploy-model --backend azure_ml without --azure-config exits 1
+   31.  CLI: deploy-model --backend local without model_path exits 1
+   32.  CLI: deploy-model exits 1 on invalid --backend
 """
 
 from __future__ import annotations
@@ -37,7 +44,9 @@ from unittest.mock import MagicMock, patch
 
 from agentic_mlops.agents.deployment import DeploymentAgent
 from agentic_mlops.contracts.deployment import (
+    DeploymentBackend,
     DeploymentInput,
+    DeploymentOutput,
     DeploymentStatus,
     DeploymentTarget,
     ExportFormat,
@@ -600,3 +609,111 @@ def test_cli_deploy_model_exits_1_on_invalid_export_format(tmp_path: Path) -> No
     )
     assert result.exit_code == 1
     assert "Invalid export-format" in result.output
+
+
+# ── 26-32. backend='azure_ml' ────────────────────────────────────────────────────
+
+
+class _FakeAzureDeployer:
+    def __init__(self, output: DeploymentOutput) -> None:
+        self._output = output
+        self.calls: list[DeploymentInput] = []
+
+    def deploy(self, inp: DeploymentInput, artifacts_dir: Path) -> DeploymentOutput:
+        self.calls.append(inp)
+        return self._output
+
+
+def test_azure_backend_without_injected_deployer_fails(tmp_path: Path) -> None:
+    result = ModelDeployer().deploy(
+        DeploymentInput(
+            model_name="m",
+            backend=DeploymentBackend.AZURE_ML,
+            azure_model_name="m-model",
+            azure_model_version=1,
+        )
+    )
+    assert result.success is False
+    assert any("azure_deployer" in e for e in result.errors)
+
+
+def test_azure_backend_delegates_to_injected_deployer(tmp_path: Path) -> None:
+    fake_output = DeploymentOutput(
+        success=True, message="ok", status=DeploymentStatus.DEPLOYED_TO_STAGING,
+        endpoint_name="m-staging", scoring_uri="https://fake/score",
+    )
+    fake_azure = _FakeAzureDeployer(fake_output)
+    deployer = ModelDeployer(azure_deployer=fake_azure)
+
+    result = deployer.deploy(
+        DeploymentInput(
+            model_name="m", backend=DeploymentBackend.AZURE_ML,
+            azure_model_name="m-model", azure_model_version=1,
+        ),
+        tmp_path / "artifacts",
+    )
+
+    assert result.success is True
+    assert result.scoring_uri == "https://fake/score"
+    assert len(fake_azure.calls) == 1
+
+
+def test_azure_backend_still_enforces_h6_production_gate(tmp_path: Path) -> None:
+    fake_azure = _FakeAzureDeployer(DeploymentOutput(success=True, message="ok"))
+    deployer = ModelDeployer(azure_deployer=fake_azure)
+
+    result = deployer.deploy(
+        DeploymentInput(
+            model_name="m", backend=DeploymentBackend.AZURE_ML,
+            azure_model_name="m-model", azure_model_version=1,
+            target=DeploymentTarget.PRODUCTION,
+        )
+    )
+
+    assert result.success is False
+    assert result.status == DeploymentStatus.BLOCKED
+    assert "rollback_plan" in result.block_reason
+    assert fake_azure.calls == []  # never reached — gate blocks before delegation
+
+
+def test_local_backend_without_model_path_fails(tmp_path: Path) -> None:
+    result = ModelDeployer().deploy(DeploymentInput(model_name="m"))
+    assert result.success is False
+    assert any("model_path" in e for e in result.errors)
+
+
+def test_cli_deploy_model_azure_ml_requires_azure_config(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from agentic_mlops.cli.main import app
+
+    result = CliRunner().invoke(
+        app,
+        ["deploy-model", "--model-name", "m", "--backend", "azure_ml"],
+    )
+    assert result.exit_code == 1
+    assert "azure-config" in result.output
+
+
+def test_cli_deploy_model_local_requires_model_path(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from agentic_mlops.cli.main import app
+
+    result = CliRunner().invoke(app, ["deploy-model", "--model-name", "m"])
+    assert result.exit_code == 1
+    assert "model_path is required" in result.output
+
+
+def test_cli_deploy_model_exits_1_on_invalid_backend(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from agentic_mlops.cli.main import app
+
+    weights = _make_weights(tmp_path)
+    result = CliRunner().invoke(
+        app,
+        ["deploy-model", str(weights), "--model-name", "m", "--backend", "bogus"],
+    )
+    assert result.exit_code == 1
+    assert "Invalid backend" in result.output

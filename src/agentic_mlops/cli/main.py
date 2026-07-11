@@ -593,6 +593,9 @@ def _print_deployment_result(result) -> None:  # type: ignore[type-arg]
         console.print(f"Release  : {result.release}")
     if result.exported_model_path:
         console.print(f"Exported : [bold]{result.exported_model_path}[/bold]")
+    if result.scoring_uri:
+        console.print(f"Scoring URI: [bold]{result.scoring_uri}[/bold]")
+        console.print(f"Azure deployment: {result.azure_deployment_name}")
 
     if result.smoke_test_results:
         console.print("\n[bold]Smoke Tests[/bold]")
@@ -769,7 +772,7 @@ def model_decision(
 @app.command("deploy-model")
 def deploy_model(
     model_path: str = typer.Argument(
-        ..., help="Path to a registered model's weights (best.pt)"
+        None, help="Path to a registered model's weights (best.pt) — required for --backend local"
     ),
     model_name: str = typer.Option(
         ..., "--model-name", help="Model name for the deployment record"
@@ -802,15 +805,39 @@ def deploy_model(
     rollback_plan: str = typer.Option(
         None, "--rollback-plan", help="Rollback plan text — required for --target production"
     ),
+    backend: str = typer.Option(
+        "local", "--backend", help="Deployment backend: local (default) | azure_ml"
+    ),
+    azure_config: str = typer.Option(
+        None,
+        "--azure-config",
+        help="Path to Azure ML config YAML — required for --backend azure_ml",
+    ),
+    azure_model_name: str = typer.Option(
+        None,
+        "--azure-model-name",
+        help="Registered Azure ML Model asset name — required for --backend azure_ml",
+    ),
+    azure_model_version: int = typer.Option(
+        None,
+        "--azure-model-version",
+        help="Registered Azure ML Model asset version — required for --backend azure_ml",
+    ),
     output_dir: str = typer.Option(
         None,
         "--output-dir",
         help="Where to save the deployment report (default: <deployment-dir>/deploy_out)",
     ),
 ) -> None:
-    """Export, smoke-test, and deploy a registered model to staging or production."""
+    """Export, smoke-test, and deploy a registered model to staging or production.
+
+    --backend local (default) writes a versioned local release directory.
+    --backend azure_ml deploys an already-registered Azure ML Model asset to a
+    real Managed Online Endpoint via the Azure ML SDK v2.
+    """
     from agentic_mlops.agents.deployment import DeploymentAgent  # noqa: PLC0415
     from agentic_mlops.contracts.deployment import (  # noqa: PLC0415
+        DeploymentBackend,
         DeploymentInput,
         DeploymentTarget,
         ExportFormat,
@@ -832,9 +859,33 @@ def deploy_model(
         )
         raise typer.Exit(code=1)
 
+    try:
+        parsed_backend = DeploymentBackend(backend)
+    except ValueError:
+        valid_b = ", ".join(b.value for b in DeploymentBackend)
+        console.print(f"[red]Invalid backend '{backend}'. Valid values: {valid_b}[/red]")
+        raise typer.Exit(code=1)
+
+    deployer = None
+    if parsed_backend == DeploymentBackend.AZURE_ML:
+        if not azure_config:
+            console.print("[red]--azure-config is required when --backend azure_ml[/red]")
+            raise typer.Exit(code=1)
+        from agentic_mlops.contracts.azure_ml import AzureMLConfig  # noqa: PLC0415
+        from agentic_mlops.integrations.azure_ml_online_endpoint import (  # noqa: PLC0415
+            AzureMLOnlineEndpointDeployer,
+        )
+        from agentic_mlops.tools.deployer import ModelDeployer  # noqa: PLC0415
+
+        azure_deployer = AzureMLOnlineEndpointDeployer(AzureMLConfig.from_yaml(azure_config))
+        deployer = ModelDeployer(azure_deployer=azure_deployer)
+    elif not model_path:
+        console.print("[red]model_path is required when --backend local[/red]")
+        raise typer.Exit(code=1)
+
     artifacts_dir = Path(output_dir) if output_dir else Path(deployment_dir) / "deploy_out"
 
-    agent = DeploymentAgent(artifacts_dir=artifacts_dir)
+    agent = DeploymentAgent(artifacts_dir=artifacts_dir, deployer=deployer)
     result = agent.run(
         DeploymentInput(
             model_path=model_path,
@@ -846,6 +897,9 @@ def deploy_model(
             endpoint_name=endpoint_name,
             production_approval_path=production_approval,
             rollback_plan=rollback_plan,
+            backend=parsed_backend,
+            azure_model_name=azure_model_name,
+            azure_model_version=azure_model_version,
         )
     )
 

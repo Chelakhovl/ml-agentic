@@ -1,5 +1,9 @@
 """Deployment Agent — prepares a registered model for serving and deploys it.
 
+Two backends (DeploymentInput.backend): "local" (default — export + smoke test +
+versioned local release directory) or "azure_ml" (real Managed Online Endpoint via
+AzureMLOnlineEndpointDeployer, injected into ModelDeployer). See tools/deployer.py.
+
 Staging can proceed automatically once smoke tests pass (spec: "semi-automatic").
 Production requires a rollback plan and an approved production_approval_path — the
 same "read a status='approved' JSON from disk" gate ModelRegistryAgent already
@@ -45,7 +49,7 @@ class DeploymentAgent(BaseAgent):
     def run(self, input: DeploymentInput) -> DeploymentOutput:
         self._log_start(model_name=input.model_name, target=str(input.target))
 
-        output = self._deployer.deploy(input)
+        output = self._deployer.deploy(input, self.artifacts_dir)
 
         json_path, md_path = self._report_writer.write_deployment_report(
             output, self.artifacts_dir

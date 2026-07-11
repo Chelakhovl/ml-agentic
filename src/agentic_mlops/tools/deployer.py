@@ -1,18 +1,20 @@
 """Model deployer — the core tool used by the Deployment Agent.
 
-Exports a registered model (ONNX via Ultralytics, or a plain .pt passthrough copy),
-runs smoke tests on the exported artifact, and writes a versioned release to a
-local staging/production directory — mirroring the same "N-th release +
-current.json" pattern already used by LocalModelRegistryClient and
-LocalDatasetVersionRegistry.
+Two backends:
+  - "local" (default): exports a registered model (ONNX via Ultralytics, or a
+    plain .pt passthrough copy), runs smoke tests, and writes a versioned
+    release to a local staging/production directory — mirroring the same
+    "N-th release + current.json" pattern already used by
+    LocalModelRegistryClient and LocalDatasetVersionRegistry. No Docker image
+    build, no AKS, no CI/CD integration — "deploying" here means writing a
+    smoke-tested release to <deployment_dir>/<endpoint_name>/, not serving
+    live traffic itself.
+  - "azure_ml": real serving via a Managed Online Endpoint (Azure ML SDK v2)
+    — see integrations/azure_ml_online_endpoint.py::AzureMLOnlineEndpointDeployer,
+    injected as azure_deployer= (same "needs external connection info, inject
+    it explicitly" pattern as AzureMLModelRegistryClient).
 
-No real serving infrastructure exists in this codebase: there is no Docker image
-build, no Azure ML Online Endpoint client, no AKS/CI-CD integration (all explicitly
-out of scope — see agentic_mlops_workflow_docs/docs/13_backlog.md). "Deploying"
-here means writing a smoke-tested release to <deployment_dir>/<endpoint_name>/ —
-actually serving traffic from it is a separate, not-yet-implemented concern.
-
-Safety rules from the spec, enforced here:
+Safety rules from the spec, enforced here for BOTH backends:
   - staging can proceed automatically once smoke tests pass ("semi-automatic")
   - production requires BOTH a rollback_plan and an approved
     production_approval_path (mirrors the approval_decision.json gate
@@ -27,12 +29,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agentic_mlops.contracts.deployment import (
+    DeploymentBackend,
     DeploymentInput,
     DeploymentOutput,
     DeploymentStatus,
     DeploymentTarget,
     ExportFormat,
 )
+from agentic_mlops.integrations.azure_ml_online_endpoint import AzureMLOnlineEndpointDeployer
 from agentic_mlops.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -98,20 +102,36 @@ def _run_smoke_tests(exported_path: Path, export_format: ExportFormat) -> tuple[
 
 
 class ModelDeployer:
-    """Orchestrates export → smoke test → versioned local release."""
+    """Orchestrates export → smoke test → versioned local release, or delegates
+    to a real Azure ML Managed Online Endpoint deployer for backend='azure_ml'."""
 
-    def __init__(self, exporter: ModelExporter | None = None) -> None:
+    def __init__(
+        self,
+        exporter: ModelExporter | None = None,
+        azure_deployer: AzureMLOnlineEndpointDeployer | None = None,
+    ) -> None:
         self._exporter = exporter or ModelExporter()
+        self._azure_deployer = azure_deployer
 
-    def deploy(self, inp: DeploymentInput) -> DeploymentOutput:
-        model_path = Path(inp.model_path)
-        if not model_path.exists():
-            return _failed(f"model_path not found: {model_path}")
-
+    def deploy(self, inp: DeploymentInput, artifacts_dir: Path | None = None) -> DeploymentOutput:
         if inp.target == DeploymentTarget.PRODUCTION:
             gate_failure = self._check_production_gate(inp)
             if gate_failure is not None:
                 return gate_failure
+
+        if inp.backend == DeploymentBackend.AZURE_ML:
+            if self._azure_deployer is None:
+                return _failed(
+                    "backend='azure_ml' requires an azure_deployer to be injected "
+                    "(CLI: deploy-model --backend azure_ml --azure-config ...)."
+                )
+            return self._azure_deployer.deploy(inp, artifacts_dir or Path(inp.deployment_dir))
+
+        if not inp.model_path:
+            return _failed("model_path is required for backend='local'.")
+        model_path = Path(inp.model_path)
+        if not model_path.exists():
+            return _failed(f"model_path not found: {model_path}")
 
         endpoint_name = inp.endpoint_name or f"{inp.model_name}-{inp.target.value}"
         endpoint_root = Path(inp.deployment_dir) / endpoint_name

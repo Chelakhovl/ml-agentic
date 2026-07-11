@@ -68,7 +68,7 @@ from agentic_mlops.contracts.data_intake import DataIntakeInput
 from agentic_mlops.contracts.dataset_structuring import DatasetStructuringInput
 from agentic_mlops.contracts.dataset_versioning import DatasetVersioningInput
 from agentic_mlops.contracts.datasets import DatasetValidationInput
-from agentic_mlops.contracts.deployment import DeploymentInput
+from agentic_mlops.contracts.deployment import DeploymentBackend, DeploymentInput
 from agentic_mlops.contracts.evaluation import EvaluationInput, EvaluationMode
 from agentic_mlops.contracts.model_decision import ModelDecisionInput
 from agentic_mlops.contracts.model_registry import ModelRegistrationInput, RegistryBackend
@@ -85,12 +85,14 @@ from agentic_mlops.contracts.training_approval import (
     TrainingApprovalAction,
     TrainingApprovalInput,
 )
+from agentic_mlops.integrations.azure_ml_online_endpoint import AzureMLOnlineEndpointDeployer
 from agentic_mlops.integrations.model_registry import (
     AzureMLModelRegistryClient,
     ModelRegistryClientBase,
 )
 from agentic_mlops.integrations.workflow_state_store import WorkflowStateStore
 from agentic_mlops.observability.logging import get_logger
+from agentic_mlops.tools.deployer import ModelDeployer
 from agentic_mlops.tools.evaluation_runner import AzureMLEvaluationRunner
 from agentic_mlops.tools.report_writer import ReportWriter
 from agentic_mlops.tools.training_runner import AzureMLTrainingRunner
@@ -737,33 +739,70 @@ class OrchestratorWorkflow:
         training = step_outputs.get("training", {})
         if training.get("skipped") or (registry is not None and registry.get("skipped")):
             return _skip("an upstream step was skipped")
-        if registry and registry.get("registry_path"):
-            model_path = registry["registry_path"]
-            model_version = registry.get("version")
-        elif training.get("best_weights_path"):
-            model_path = training["best_weights_path"]
-            model_version = None
-        else:
-            return _StepOutcome(
-                False, "FAILED",
-                errors=[
-                    "deployment requires either model_registry or training to have "
-                    "produced model weights."
-                ],
-            )
 
-        agent = DeploymentAgent(artifacts_dir=output_root / "deployment")
+        deployer = None
+        if inp.deployment_backend == DeploymentBackend.AZURE_ML:
+            if azure_config is None:
+                return _StepOutcome(
+                    False, "FAILED",
+                    errors=["azure_config_path is required when deployment_backend='azure_ml'."],
+                )
+            azure_model_name = inp.azure_model_name
+            azure_model_version = inp.azure_model_version
+            if (
+                not azure_model_name
+                and registry
+                and registry.get("registry_path")
+                and inp.registry_backend == RegistryBackend.AZURE_ML
+            ):
+                # Chain straight from a prior azure_ml model_registry step.
+                azure_model_name = inp.model_name
+                azure_model_version = registry.get("version")
+            if not azure_model_name or azure_model_version is None:
+                return _StepOutcome(
+                    False, "FAILED",
+                    errors=[
+                        "azure_model_name and azure_model_version are required for "
+                        "deployment_backend='azure_ml' (set them directly, or include "
+                        "model_registry with registry_backend='azure_ml' first)."
+                    ],
+                )
+            deployer = ModelDeployer(
+                azure_deployer=AzureMLOnlineEndpointDeployer(azure_config)
+            )
+            model_path, model_version = None, None
+        else:
+            azure_model_name, azure_model_version = None, None
+            if registry and registry.get("registry_path"):
+                model_path = registry["registry_path"]
+                model_version = registry.get("version")
+            elif training.get("best_weights_path"):
+                model_path = training["best_weights_path"]
+                model_version = None
+            else:
+                return _StepOutcome(
+                    False, "FAILED",
+                    errors=[
+                        "deployment requires either model_registry or training to have "
+                        "produced model weights."
+                    ],
+                )
+
+        agent = DeploymentAgent(artifacts_dir=output_root / "deployment", deployer=deployer)
         result = agent.run(
             DeploymentInput(
                 model_path=model_path,
                 model_name=inp.model_name,
                 model_version=model_version,
                 target=inp.deployment_target,
+                backend=inp.deployment_backend,
                 export_format=inp.export_format,
                 deployment_dir=inp.deployment_dir,
                 endpoint_name=inp.endpoint_name,
                 production_approval_path=inp.production_approval_path,
                 rollback_plan=inp.rollback_plan,
+                azure_model_name=azure_model_name,
+                azure_model_version=azure_model_version,
             )
         )
         coarse = "blocked" if str(result.status) == "blocked" else None
@@ -772,7 +811,11 @@ class OrchestratorWorkflow:
             status_label=str(result.status).upper(),
             errors=result.errors,
             artifacts=result.artifacts,
-            key_outputs={"endpoint_name": result.endpoint_name, "release": result.release},
+            key_outputs={
+                "endpoint_name": result.endpoint_name,
+                "release": result.release,
+                "scoring_uri": result.scoring_uri,
+            },
             coarse=coarse,
         )
 

@@ -60,10 +60,16 @@ registry_backend: local   # local | mlflow | azure_ml
 registry_dir: outputs/model_registry
 
 # ── deployment (optional) ───────────────────────────────────────────────────
-# deployment_target: staging   # staging | production
-# export_format: onnx          # onnx | pt
+# deployment_target: staging     # staging | production
+# deployment_backend: local      # local | azure_ml
+# export_format: onnx            # onnx | pt (backend=local only)
 # deployment_dir: outputs/deployments
 # production_approval_path: ./runs/<workflow_id>/artifacts/approval/approval_decision.json
 # rollback_plan: "Revert traffic to previous release via current.json"
+# For deployment_backend=azure_ml: azure_model_name/azure_model_version are only
+# needed here if model_registry (with registry_backend=azure_ml) is NOT also in
+# `steps` — otherwise they're auto-chained from its output.
+# azure_model_name: yolo-model
+# azure_model_version: 3
 
 # azure_config_path: configs/azure_ml.yaml   # required for any azure-ml/azure_ml choice above

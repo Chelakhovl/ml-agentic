@@ -258,6 +258,8 @@ class ReportWriter:
             "release": output.release,
             "smoke_test_results": output.smoke_test_results,
             "block_reason": output.block_reason,
+            "scoring_uri": output.scoring_uri,
+            "azure_deployment_name": output.azure_deployment_name,
             "message": output.message,
         }
 
@@ -618,6 +620,13 @@ def _deployment_report_md(report: dict[str, Any]) -> str:
 
     if report["exported_model_path"]:
         lines += [f"**Exported model:** `{report['exported_model_path']}`", ""]
+
+    if report["scoring_uri"]:
+        lines += [
+            f"**Scoring URI:** `{report['scoring_uri']}`  ",
+            f"**Azure deployment:** `{report['azure_deployment_name']}`",
+            "",
+        ]
 
     if report["smoke_test_results"]:
         lines += ["## Smoke Tests", ""]

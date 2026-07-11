@@ -23,3 +23,15 @@ job:
 data:
   input_mode: ro_mount
   asset_uri: null
+
+# Managed Online Endpoint settings — used by `deploy-model --backend azure_ml`.
+serving:
+  instance_type: Standard_DS2_v2
+  instance_count: 1
+  auth_mode: key
+  timeout_minutes: 20
+  # environment:  # defaults to the `environment:` block above if omitted — only
+  #   set this if serving needs different dependencies (e.g. an inference server)
+  #   than training does.
+  #   mode: registered
+  #   registered_environment: "azureml:yolo-serving-env:1"

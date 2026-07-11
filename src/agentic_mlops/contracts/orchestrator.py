@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from .approvals import ApprovalAction
 from .common import ToolResult
 from .dataset_structuring import LabelFormat, SplitStrategy
-from .deployment import DeploymentTarget, ExportFormat
+from .deployment import DeploymentBackend, DeploymentTarget, ExportFormat
 from .model_registry import RegistryBackend
 from .training_approval import TrainingApprovalAction
 
@@ -139,11 +139,17 @@ class OrchestratorInput(BaseModel):
 
     # ── deployment ───────────────────────────────────────────────────────────
     deployment_target: DeploymentTarget = DeploymentTarget.STAGING
+    deployment_backend: DeploymentBackend = DeploymentBackend.LOCAL
     export_format: ExportFormat = ExportFormat.ONNX
     deployment_dir: str = "outputs/deployments"
     endpoint_name: str | None = None
     production_approval_path: str | None = None
     rollback_plan: str | None = None
+    # Only needed for deployment_backend="azure_ml" when NOT chaining from a prior
+    # model_registry step with registry_backend="azure_ml" (which already produces
+    # these — see OrchestratorWorkflow._step_deployment).
+    azure_model_name: str | None = None
+    azure_model_version: int | None = None
 
     @classmethod
     def from_yaml(cls, path: str | Path, **overrides: object) -> OrchestratorInput:

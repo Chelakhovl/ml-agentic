@@ -31,16 +31,24 @@ Coverage matrix:
    27.  H4 gate: reject_training cascades SKIPPED through training/evaluation/approval
    28.  H4 gate: training_approval requires dataset_validation to have run first
    29.  _is_legal recognizes the TRAINING_APPROVAL_REQUIRED pause/resume transitions
+   30.  deployment_backend='azure_ml' uses explicit azure_model_name/version
+   31.  deployment_backend='azure_ml' chains azure_model_name/version from model_registry
+   32.  deployment_backend='azure_ml' requires azure_config_path
+   33.  deployment_backend='azure_ml' requires azure_model_name/version when not chainable
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
 from agentic_mlops.contracts.approvals import ApprovalAction
+from agentic_mlops.contracts.azure_ml import AzureMLConfig
+from agentic_mlops.contracts.deployment import DeploymentBackend, DeploymentOutput, DeploymentStatus
+from agentic_mlops.contracts.model_registry import RegistryBackend
 from agentic_mlops.contracts.orchestrator import (
     DEFAULT_STEPS,
     OrchestratorInput,
@@ -50,6 +58,18 @@ from agentic_mlops.contracts.training_approval import TrainingApprovalAction
 from agentic_mlops.integrations.workflow_state_store import WorkflowStateStore
 from agentic_mlops.workflows.orchestrator import OrchestratorWorkflow
 from tests.conftest import make_valid_dataset
+
+
+def _minimal_azure_config(**overrides: object) -> AzureMLConfig:
+    defaults: dict = {
+        "subscription_id": "sub-123",
+        "resource_group": "rg-test",
+        "workspace_name": "ws-test",
+        "compute_name": "gpu-cluster",
+        "environment": {"mode": "registered", "registered_environment": "azureml:yolo-env:1"},
+    }
+    defaults.update(overrides)
+    return AzureMLConfig.model_validate(defaults)
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -525,3 +545,84 @@ def test_is_legal_recognizes_training_approval_pause() -> None:
         "TRAINING_APPROVAL_RUNNING", "TRAINING_APPROVAL_COMPLETED", steps
     ) is True
     assert wf._is_legal("TRAINING_APPROVAL_REQUIRED", "TRAINING_RUNNING", steps) is False
+
+
+# ── 30-33. deployment_backend='azure_ml' ────────────────────────────────────────
+
+
+def test_azure_ml_deployment_uses_explicit_model_name_version(tmp_path: Path) -> None:
+    wf = OrchestratorWorkflow()
+    inp = _base_input(
+        tmp_path,
+        deployment_backend=DeploymentBackend.AZURE_ML,
+        azure_config_path="unused.yaml",
+        azure_model_name="factory-defects-model",
+        azure_model_version=5,
+    )
+    fake_output = DeploymentOutput(
+        success=True, message="ok", status=DeploymentStatus.DEPLOYED_TO_STAGING,
+        endpoint_name="yolo-model-staging",
+    )
+    with patch("agentic_mlops.workflows.orchestrator.AzureMLOnlineEndpointDeployer") as MockDep:
+        MockDep.return_value.deploy.return_value = fake_output
+        outcome = wf._step_deployment(
+            inp, tmp_path / "artifacts", {"approval": {"approved": True}},
+            _minimal_azure_config(),
+        )
+
+    assert outcome.success is True
+    call_input = MockDep.return_value.deploy.call_args[0][0]
+    assert call_input.azure_model_name == "factory-defects-model"
+    assert call_input.azure_model_version == 5
+
+
+def test_azure_ml_deployment_chains_from_model_registry(tmp_path: Path) -> None:
+    wf = OrchestratorWorkflow()
+    inp = _base_input(
+        tmp_path,
+        model_name="chained-model",
+        deployment_backend=DeploymentBackend.AZURE_ML,
+        azure_config_path="unused.yaml",
+        registry_backend=RegistryBackend.AZURE_ML,
+    )
+    step_outputs = {
+        "approval": {"approved": True},
+        "model_registry": {"registry_path": "azureml:chained-model:7", "version": 7},
+    }
+    fake_output = DeploymentOutput(success=True, message="ok")
+    with patch("agentic_mlops.workflows.orchestrator.AzureMLOnlineEndpointDeployer") as MockDep:
+        MockDep.return_value.deploy.return_value = fake_output
+        outcome = wf._step_deployment(
+            inp, tmp_path / "artifacts", step_outputs, _minimal_azure_config()
+        )
+
+    assert outcome.success is True
+    call_input = MockDep.return_value.deploy.call_args[0][0]
+    assert call_input.azure_model_name == "chained-model"
+    assert call_input.azure_model_version == 7
+
+
+def test_azure_ml_deployment_requires_azure_config(tmp_path: Path) -> None:
+    wf = OrchestratorWorkflow()
+    inp = _base_input(
+        tmp_path,
+        deployment_backend=DeploymentBackend.AZURE_ML,
+        azure_model_name="m", azure_model_version=1,
+    )
+    outcome = wf._step_deployment(
+        inp, tmp_path / "artifacts", {"approval": {"approved": True}}, None
+    )
+    assert outcome.success is False
+    assert "azure_config_path" in outcome.errors[0]
+
+
+def test_azure_ml_deployment_requires_model_name_when_not_chainable(tmp_path: Path) -> None:
+    wf = OrchestratorWorkflow()
+    inp = _base_input(
+        tmp_path, deployment_backend=DeploymentBackend.AZURE_ML, azure_config_path="unused.yaml"
+    )
+    outcome = wf._step_deployment(
+        inp, tmp_path / "artifacts", {"approval": {"approved": True}}, _minimal_azure_config()
+    )
+    assert outcome.success is False
+    assert "azure_model_name" in outcome.errors[0]

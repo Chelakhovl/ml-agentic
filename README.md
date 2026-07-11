@@ -71,13 +71,13 @@ src/agentic_mlops/
   agents/           ← orchestration layer (5 MVP agents + data-intake, structure-dataset, pseudo-label, label-qa, dataset-versioning, model-decision, deployment, monitoring, training-approval)
   contracts/        ← Pydantic I/O models
   tools/            ← dataset validator/structurer, YOLO trainer/evaluator, data intake scanner, pseudo-labeler, label QA checker, model decider, deployer, monitor, report writer
-  integrations/     ← Azure ML client, MLflow tracking, model + dataset registry backends, workflow state store
-  azure_jobs/       ← entry scripts submitted to Azure ML (train_yolo.py, eval_yolo.py)
+  integrations/     ← Azure ML client, Azure ML Online Endpoint deployer, MLflow tracking, model + dataset registry backends, workflow state store
+  azure_jobs/       ← entry scripts submitted to Azure ML (train_yolo.py, eval_yolo.py) + Online Endpoint scoring script (score.py)
   workflows/        ← MVPWorkflow (5-step), OrchestratorWorkflow (full configurable pipeline), promotion policy
   observability/    ← structured logging
   cli/              ← Typer CLI
 tests/
-  unit/             ← 461 tests across all agents, tools, and integrations
+  unit/             ← 481 tests across all agents, tools, and integrations
   conftest.py       ← shared fixtures
 configs/
   training.example.yaml
@@ -180,8 +180,26 @@ agentic-mlops evaluate \
 Expected output: `metrics.json`-derived `evaluation_output.json`, confusion matrix / PR-curve
 plots downloaded to `--output-dir`, plus the same promotion-policy recommendation as `local-yolo`.
 
+## Azure ML Serving
+
+Deploy a registered model to a real Azure ML Managed Online Endpoint, using the same
+`azure_ml.yaml` (its `serving:` block controls instance type/count and auth mode):
+
+```bash
+agentic-mlops deploy-model --model-name my-model --backend azure_ml \
+  --azure-config configs/azure_ml.yaml \
+  --azure-model-name my-model --azure-model-version 3
+```
+
+Requires the model to already be registered as an Azure ML Model asset (e.g. via
+`register-model --backend azure_ml`). Creates the endpoint if it doesn't exist,
+creates/updates the deployment (scoring script: `azure_jobs/score.py`), then routes
+100% traffic to it — no blue/green or canary rollout. The H6 production gate
+(`--rollback-plan` + `--production-approval`) applies the same way it does for
+`--backend local`.
+
 ## Extending
 
-- Azure ML: see `src/agentic_mlops/integrations/azure_ml_client.py`, `src/agentic_mlops/tools/training_runner.py`, `src/agentic_mlops/tools/evaluation_runner.py`
-- Azure job scripts: `src/agentic_mlops/azure_jobs/train_yolo.py`, `src/agentic_mlops/azure_jobs/eval_yolo.py`
+- Azure ML: see `src/agentic_mlops/integrations/azure_ml_client.py`, `src/agentic_mlops/tools/training_runner.py`, `src/agentic_mlops/tools/evaluation_runner.py`, `src/agentic_mlops/integrations/azure_ml_online_endpoint.py`
+- Azure job scripts: `src/agentic_mlops/azure_jobs/train_yolo.py`, `src/agentic_mlops/azure_jobs/eval_yolo.py`, `src/agentic_mlops/azure_jobs/score.py`
 - MLflow: see `src/agentic_mlops/integrations/mlflow_client.py`, `src/agentic_mlops/integrations/model_registry.py::MLflowModelRegistryClient`

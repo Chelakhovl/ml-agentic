@@ -49,6 +49,22 @@ class AzureMLDataConfig(BaseModel):
     asset_uri: str | None = None
 
 
+class AzureMLServingConfig(BaseModel):
+    """Managed Online Endpoint provisioning settings, shared across deployments.
+
+    Separate from AzureMLEnvironmentConfig (training/eval jobs) because a serving
+    environment typically needs different dependencies (an inference server, e.g.
+    azureml-inference-server-http) than a training environment — reuse the same
+    `registered_environment` only if it actually has both.
+    """
+
+    instance_type: str = "Standard_DS2_v2"
+    instance_count: int = Field(default=1, gt=0)
+    auth_mode: Literal["key", "aml_token"] = "key"
+    timeout_minutes: int = Field(default=20, gt=0)
+    environment: AzureMLEnvironmentConfig | None = None
+
+
 class AzureMLConfig(BaseModel):
     subscription_id: str
     resource_group: str
@@ -59,6 +75,7 @@ class AzureMLConfig(BaseModel):
     environment: AzureMLEnvironmentConfig = Field(default_factory=AzureMLEnvironmentConfig)
     job: AzureMLJobConfig = Field(default_factory=AzureMLJobConfig)
     data: AzureMLDataConfig = Field(default_factory=AzureMLDataConfig)
+    serving: AzureMLServingConfig = Field(default_factory=AzureMLServingConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> AzureMLConfig:

@@ -130,12 +130,70 @@ class FakeModelsOperations:
         return _FakeRegisteredModel(name=name, version=str(version))
 
 
+class _FakePoller:
+    """Mimics azure.core.polling.LROPoller — real online_endpoints/online_deployments
+    calls return one of these; .result() blocks until done and returns the resource."""
+
+    def __init__(self, result: Any) -> None:
+        self._result = result
+
+    def result(self) -> Any:
+        return self._result
+
+
+class _FakeOnlineEndpoint:
+    def __init__(self, name: str, traffic: dict[str, int] | None = None) -> None:
+        self.name = name
+        self.auth_mode = "key"
+        self.traffic = traffic or {}
+        self.scoring_uri = f"https://{name}.fake.inference.ml.azure.com/score"
+
+
+class FakeOnlineEndpointsOperations:
+    """Fake azure.ai.ml MLClient.online_endpoints for unit tests."""
+
+    def __init__(self) -> None:
+        self.created: list[Any] = []
+        self._endpoints: dict[str, _FakeOnlineEndpoint] = {}
+
+    def begin_create_or_update(self, endpoint: Any) -> _FakePoller:
+        self.created.append(endpoint)
+        existing = self._endpoints.get(endpoint.name)
+        traffic = getattr(endpoint, "traffic", None) or (existing.traffic if existing else {})
+        fake = _FakeOnlineEndpoint(name=endpoint.name, traffic=traffic)
+        self._endpoints[endpoint.name] = fake
+        return _FakePoller(fake)
+
+    def get(self, name: str) -> _FakeOnlineEndpoint:
+        return self._endpoints[name]
+
+
+class _FakeOnlineDeployment:
+    def __init__(self, name: str, endpoint_name: str) -> None:
+        self.name = name
+        self.endpoint_name = endpoint_name
+
+
+class FakeOnlineDeploymentsOperations:
+    """Fake azure.ai.ml MLClient.online_deployments for unit tests."""
+
+    def __init__(self) -> None:
+        self.created: list[Any] = []
+
+    def begin_create_or_update(self, deployment: Any) -> _FakePoller:
+        self.created.append(deployment)
+        fake = _FakeOnlineDeployment(name=deployment.name, endpoint_name=deployment.endpoint_name)
+        return _FakePoller(fake)
+
+
 class FakeMLClient:
     """Minimal MLClient stub for unit tests."""
 
     def __init__(self, job_status: str = "Completed") -> None:
         self.jobs = FakeJobsOperations(job_status=job_status)
         self.models = FakeModelsOperations()
+        self.online_endpoints = FakeOnlineEndpointsOperations()
+        self.online_deployments = FakeOnlineDeploymentsOperations()
 
 
 class FakeAzureMLClientFactory:
