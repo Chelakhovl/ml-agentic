@@ -21,7 +21,7 @@ from agentic_mlops.contracts.dataset_versioning import (
 )
 from agentic_mlops.integrations.dataset_registry import (
     DatasetVersionRegistryClientBase,
-    LocalDatasetVersionRegistry,
+    create_dataset_registry_client,
 )
 from agentic_mlops.integrations.mlflow_client import MLflowTrackingClientBase
 from agentic_mlops.tools.report_writer import ReportWriter
@@ -78,9 +78,7 @@ class DatasetVersioningAgent(BaseAgent):
         mlflow_run_id: str | None = None,
     ) -> None:
         super().__init__(artifacts_dir)
-        self._registry_client: DatasetVersionRegistryClientBase = (
-            registry_client or LocalDatasetVersionRegistry()
-        )
+        self._registry_client = registry_client
         self._report_writer = ReportWriter()
         self._mlflow = mlflow_client
         self._mlflow_run_id = mlflow_run_id
@@ -132,7 +130,12 @@ class DatasetVersioningAgent(BaseAgent):
 
         classes = _extract_classes(data_yaml_path)
 
-        output = self._registry_client.register(
+        try:
+            client = self._registry_client or create_dataset_registry_client(input.backend)
+        except ValueError as exc:
+            return _failed(str(exc), input.dataset_name)
+
+        output = client.register(
             input, classes, validation_status, label_qa_status, self.artifacts_dir
         )
 

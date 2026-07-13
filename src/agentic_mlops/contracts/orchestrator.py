@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from .approvals import ApprovalAction
 from .common import ToolResult
 from .dataset_structuring import LabelFormat, SplitStrategy
+from .dataset_versioning import DatasetRegistryBackend
 from .deployment import DeploymentBackend, DeploymentTarget, ExportFormat
 from .model_registry import RegistryBackend
 from .training_approval import TrainingApprovalAction
@@ -103,6 +104,7 @@ class OrchestratorInput(BaseModel):
 
     # ── dataset_versioning ───────────────────────────────────────────────────
     dataset_registry_dir: str = "outputs/dataset_registry"
+    dataset_registry_backend: DatasetRegistryBackend = DatasetRegistryBackend.LOCAL
     parent_version: int | None = None
     approved_by: str | None = None
     source_batches: list[str] = Field(default_factory=list)

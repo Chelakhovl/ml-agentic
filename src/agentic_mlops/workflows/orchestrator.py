@@ -72,7 +72,10 @@ from agentic_mlops.contracts.approvals import ApprovalAction, ApprovalInput
 from agentic_mlops.contracts.azure_ml import AzureMLConfig
 from agentic_mlops.contracts.data_intake import DataIntakeInput
 from agentic_mlops.contracts.dataset_structuring import DatasetStructuringInput
-from agentic_mlops.contracts.dataset_versioning import DatasetVersioningInput
+from agentic_mlops.contracts.dataset_versioning import (
+    DatasetRegistryBackend,
+    DatasetVersioningInput,
+)
 from agentic_mlops.contracts.datasets import DatasetValidationInput
 from agentic_mlops.contracts.deployment import DeploymentBackend, DeploymentInput
 from agentic_mlops.contracts.evaluation import EvaluationInput, EvaluationMode
@@ -93,6 +96,7 @@ from agentic_mlops.contracts.training_approval import (
     TrainingApprovalInput,
 )
 from agentic_mlops.integrations.azure_ml_online_endpoint import AzureMLOnlineEndpointDeployer
+from agentic_mlops.integrations.dataset_registry import AzureMLDatasetRegistryClient
 from agentic_mlops.integrations.mlflow_client import MLflowTrackingClientBase
 from agentic_mlops.integrations.model_registry import (
     AzureMLModelRegistryClient,
@@ -473,8 +477,23 @@ class OrchestratorWorkflow:
     ) -> _StepOutcome:
         dataset_path, _ = self._effective_dataset(step_outputs, inp)
         validation = step_outputs.get("dataset_validation")
+
+        registry_client = None
+        if inp.dataset_registry_backend == DatasetRegistryBackend.AZURE_ML:
+            if azure_config is None:
+                return _StepOutcome(
+                    False, "FAILED",
+                    errors=[
+                        "azure_config_path is required when "
+                        "dataset_registry_backend='azure_ml'."
+                    ],
+                )
+            registry_client = AzureMLDatasetRegistryClient(azure_config)
+
         agent = DatasetVersioningAgent(
-            artifacts_dir=output_root / "dataset_versioning", **self._mlflow_kwargs()
+            artifacts_dir=output_root / "dataset_versioning",
+            registry_client=registry_client,
+            **self._mlflow_kwargs(),
         )
         result = agent.run(
             DatasetVersioningInput(
@@ -486,6 +505,7 @@ class OrchestratorWorkflow:
                 validation_report_path=validation.get("report_path") if validation else None,
                 approved_by=inp.approved_by,
                 source_batches=inp.source_batches,
+                backend=inp.dataset_registry_backend,
             )
         )
         coarse = "blocked" if str(result.status) == "blocked" else None

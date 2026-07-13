@@ -35,6 +35,8 @@ Coverage matrix:
    31.  deployment_backend='azure_ml' chains azure_model_name/version from model_registry
    32.  deployment_backend='azure_ml' requires azure_config_path
    33.  deployment_backend='azure_ml' requires azure_model_name/version when not chainable
+   34.  dataset_registry_backend='azure_ml' registers via AzureMLDatasetRegistryClient
+   35.  dataset_registry_backend='azure_ml' requires azure_config_path
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ import yaml
 
 from agentic_mlops.contracts.approvals import ApprovalAction
 from agentic_mlops.contracts.azure_ml import AzureMLConfig
+from agentic_mlops.contracts.dataset_versioning import DatasetRegistryBackend
 from agentic_mlops.contracts.deployment import DeploymentBackend, DeploymentOutput, DeploymentStatus
 from agentic_mlops.contracts.model_registry import RegistryBackend
 from agentic_mlops.contracts.orchestrator import (
@@ -626,3 +629,39 @@ def test_azure_ml_deployment_requires_model_name_when_not_chainable(tmp_path: Pa
     )
     assert outcome.success is False
     assert "azure_model_name" in outcome.errors[0]
+
+
+# ── 34-35. dataset_registry_backend='azure_ml' ──────────────────────────────────
+
+
+def test_dataset_registry_azure_ml_registers_via_client(tmp_path: Path) -> None:
+    wf = OrchestratorWorkflow()
+    inp = _base_input(
+        tmp_path,
+        dataset_registry_backend=DatasetRegistryBackend.AZURE_ML,
+        azure_config_path="unused.yaml",
+    )
+    with patch("agentic_mlops.workflows.orchestrator.AzureMLDatasetRegistryClient") as MockClient:
+        from agentic_mlops.contracts.dataset_versioning import (
+            DatasetVersioningOutput,
+            DatasetVersionStatus,
+        )
+
+        MockClient.return_value.register.return_value = DatasetVersioningOutput(
+            success=True, message="ok", status=DatasetVersionStatus.REGISTERED,
+            dataset_name="wf_test", version=1,
+        )
+        outcome = wf._step_dataset_versioning(
+            inp, tmp_path / "artifacts", {}, _minimal_azure_config()
+        )
+
+    assert outcome.success is True
+    MockClient.assert_called_once_with(_minimal_azure_config())
+
+
+def test_dataset_registry_azure_ml_requires_azure_config(tmp_path: Path) -> None:
+    wf = OrchestratorWorkflow()
+    inp = _base_input(tmp_path, dataset_registry_backend=DatasetRegistryBackend.AZURE_ML)
+    outcome = wf._step_dataset_versioning(inp, tmp_path / "artifacts", {}, None)
+    assert outcome.success is False
+    assert "azure_config_path" in outcome.errors[0]

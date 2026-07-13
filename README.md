@@ -77,7 +77,7 @@ src/agentic_mlops/
   observability/    ← structured logging
   cli/              ← Typer CLI
 tests/
-  unit/             ← 489 tests across all agents, tools, and integrations
+  unit/             ← 500 tests across all agents, tools, and integrations
   conftest.py       ← shared fixtures
 configs/
   training.example.yaml
@@ -96,7 +96,7 @@ configs/
 | `pseudo-label` | Pre-label images with an approved YOLO model, routed into high/medium/low confidence buckets — standalone, not part of `run-mvp` |
 | `validate-dataset` | Validate a YOLO dataset locally — no Azure needed |
 | `label-qa` | Check label quality (suspicious bbox geometry, class imbalance, optional reference-model disagreement) — standalone, not part of `run-mvp` |
-| `version-dataset` | Register a clean, structured dataset as a new version with lineage (hash-deduplicated) — standalone, not part of `run-mvp` |
+| `version-dataset` | Register a clean, structured dataset as a new version with lineage (hash-deduplicated locally, or as a real Azure ML Data asset with `--backend azure_ml`) — standalone, not part of `run-mvp` |
 | `model-decision` | Turn an evaluation report into an explainable promote/reject/retrain/need-more-data/need-label-review decision — standalone, not part of `run-mvp` |
 | `deploy-model` | Export (ONNX/pt) + smoke-test + deploy a registered model to a local staging/production release — standalone, not part of `run-mvp` |
 | `monitor` | Analyze a predictions log for latency/error/confidence/drift issues and recommend an action — standalone, not part of `run-mvp` |
@@ -209,6 +209,6 @@ creates/updates the deployment (scoring script: `azure_jobs/score.py`), then rou
 
 ## Extending
 
-- Azure ML: see `src/agentic_mlops/integrations/azure_ml_client.py`, `src/agentic_mlops/tools/training_runner.py`, `src/agentic_mlops/tools/evaluation_runner.py`, `src/agentic_mlops/integrations/azure_ml_online_endpoint.py`
+- Azure ML: see `src/agentic_mlops/integrations/azure_ml_client.py`, `src/agentic_mlops/tools/training_runner.py`, `src/agentic_mlops/tools/evaluation_runner.py`, `src/agentic_mlops/integrations/azure_ml_online_endpoint.py`, `src/agentic_mlops/integrations/dataset_registry.py::AzureMLDatasetRegistryClient`
 - Azure job scripts: `src/agentic_mlops/azure_jobs/train_yolo.py`, `src/agentic_mlops/azure_jobs/eval_yolo.py`, `src/agentic_mlops/azure_jobs/score.py`
 - MLflow: see `src/agentic_mlops/integrations/mlflow_client.py`, `src/agentic_mlops/integrations/model_registry.py::MLflowModelRegistryClient`

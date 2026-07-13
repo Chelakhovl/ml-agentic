@@ -130,6 +130,33 @@ class FakeModelsOperations:
         return _FakeRegisteredModel(name=name, version=str(version))
 
 
+class _FakeRegisteredDataAsset:
+    """Minimal stub returned by FakeDataOperations.create_or_update."""
+
+    def __init__(self, name: str, version: str) -> None:
+        self.name = name
+        self.version = version
+        self.id = (
+            "azureml://subscriptions/fake/resourceGroups/fake/workspaces/fake"
+            f"/data/{name}/versions/{version}"
+        )
+
+
+class FakeDataOperations:
+    """Fake azure.ai.ml MLClient.data for unit tests."""
+
+    def __init__(self) -> None:
+        self.created: list[Any] = []
+        self._next_version: dict[str, int] = {}
+
+    def create_or_update(self, data: Any) -> _FakeRegisteredDataAsset:
+        name = data.name
+        version = self._next_version.get(name, 0) + 1
+        self._next_version[name] = version
+        self.created.append(data)
+        return _FakeRegisteredDataAsset(name=name, version=str(version))
+
+
 class _FakePoller:
     """Mimics azure.core.polling.LROPoller — real online_endpoints/online_deployments
     calls return one of these; .result() blocks until done and returns the resource."""
@@ -192,6 +219,7 @@ class FakeMLClient:
     def __init__(self, job_status: str = "Completed") -> None:
         self.jobs = FakeJobsOperations(job_status=job_status)
         self.models = FakeModelsOperations()
+        self.data = FakeDataOperations()
         self.online_endpoints = FakeOnlineEndpointsOperations()
         self.online_deployments = FakeOnlineDeploymentsOperations()
 

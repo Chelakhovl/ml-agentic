@@ -680,6 +680,14 @@ def version_dataset(
     source_batches: str = typer.Option(
         None, "--source-batches", help="Comma-separated list of source batch identifiers"
     ),
+    backend: str = typer.Option(
+        "local", "--backend", help="Dataset registry backend: local (default) | azure_ml"
+    ),
+    azure_config: str = typer.Option(
+        None,
+        "--azure-config",
+        help="Path to Azure ML config YAML — required for --backend azure_ml",
+    ),
     output_dir: str = typer.Option(
         None,
         "--output-dir",
@@ -688,11 +696,33 @@ def version_dataset(
 ) -> None:
     """Register a structured YOLO dataset as a new version with lineage."""
     from agentic_mlops.agents.dataset_versioning import DatasetVersioningAgent  # noqa: PLC0415
-    from agentic_mlops.contracts.dataset_versioning import DatasetVersioningInput  # noqa: PLC0415
+    from agentic_mlops.contracts.dataset_versioning import (  # noqa: PLC0415
+        DatasetRegistryBackend,
+        DatasetVersioningInput,
+    )
+
+    try:
+        parsed_backend = DatasetRegistryBackend(backend)
+    except ValueError:
+        valid = ", ".join(b.value for b in DatasetRegistryBackend)
+        console.print(f"[red]Invalid backend '{backend}'. Valid values: {valid}[/red]")
+        raise typer.Exit(code=1)
+
+    registry_client = None
+    if parsed_backend == DatasetRegistryBackend.AZURE_ML:
+        if not azure_config:
+            console.print("[red]--azure-config is required when --backend azure_ml[/red]")
+            raise typer.Exit(code=1)
+        from agentic_mlops.contracts.azure_ml import AzureMLConfig  # noqa: PLC0415
+        from agentic_mlops.integrations.dataset_registry import (  # noqa: PLC0415
+            AzureMLDatasetRegistryClient,
+        )
+
+        registry_client = AzureMLDatasetRegistryClient(AzureMLConfig.from_yaml(azure_config))
 
     artifacts_dir = Path(output_dir) if output_dir else Path(registry_dir) / "version_out"
 
-    agent = DatasetVersioningAgent(artifacts_dir=artifacts_dir)
+    agent = DatasetVersioningAgent(artifacts_dir=artifacts_dir, registry_client=registry_client)
     result = agent.run(
         DatasetVersioningInput(
             dataset_path=dataset_path,
@@ -708,6 +738,7 @@ def version_dataset(
                 if source_batches
                 else []
             ),
+            backend=parsed_backend,
         )
     )
 

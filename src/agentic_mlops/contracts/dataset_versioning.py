@@ -16,6 +16,11 @@ class DatasetVersionStatus(StrEnum):
     FAILED = "failed"
 
 
+class DatasetRegistryBackend(StrEnum):
+    LOCAL = "local"        # filesystem registry with hash-based dedup
+    AZURE_ML = "azure_ml"  # real Azure ML Data asset (no local dedup — Azure owns versioning)
+
+
 class DatasetVersioningInput(BaseModel):
     dataset_path: str
     dataset_name: str
@@ -27,6 +32,7 @@ class DatasetVersioningInput(BaseModel):
     label_quality_report_path: str | None = None
     approved_by: str | None = None
     source_batches: list[str] = Field(default_factory=list)
+    backend: DatasetRegistryBackend = DatasetRegistryBackend.LOCAL
 
 
 class DatasetLineage(BaseModel):

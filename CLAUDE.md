@@ -47,6 +47,10 @@ agentic-mlops pseudo-label /path/to/unlabeled_images --model-path models/approve
 agentic-mlops version-dataset ./runs/structured --dataset-name factory_defects \
   --validation-report ./runs/structured/validation_out/dataset_quality_report.json
 
+# CLI: register that same dataset as a real Azure ML Data asset instead
+agentic-mlops version-dataset ./runs/structured --dataset-name factory_defects \
+  --backend azure_ml --azure-config configs/azure_ml.yaml
+
 # CLI: turn an evaluation report into an explainable promote/reject/retrain decision
 agentic-mlops model-decision ./runs/evaluation/evaluation_report.json \
   --promotion-policy configs/promotion_policy.yaml --baseline-report ./baseline_eval/evaluation_report.json
@@ -326,12 +330,25 @@ versions" rule. On an actual new version the full dataset tree is copied into
 `<registry_dir>/<name>/versions/<N>/dataset/` (same "registry owns an immutable copy"
 philosophy as `LocalModelRegistryClient` copying `best.pt`) alongside `lineage.json`
 (classes, hash, `parent_version`, `workflow_id`, `source_batches`, `approved_by`,
-validation/label-QA status). **Local filesystem backend only — Azure ML Data Asset
-registration is not implemented** (separately tracked in the backlog under Phase 2). CLI:
+validation/label-QA status). CLI:
 `agentic-mlops version-dataset <dataset_path> --dataset-name ... [--validation-report ...]
 [--label-quality-report ...] [--parent-version ...]`. Writes `dataset_version_report.json`/
 `.md`. Deliberately **not** wired into `run-mvp` — same reasoning as the other Phase 0/3
 agents.
+
+**`--backend azure_ml`** (`integrations/dataset_registry.py::AzureMLDatasetRegistryClient`) —
+real `MLClient.data.create_or_update()`, registering the dataset directory as an Azure ML
+Data asset (`AssetTypes.URI_FOLDER`). Same "needs external connection info, inject an
+`AzureMLConfig` explicitly" pattern as `AzureMLModelRegistryClient`/
+`AzureMLOnlineEndpointDeployer` — `create_dataset_registry_client()` raises a clear
+`ValueError` for `AZURE_ML`, surfaced by `DatasetVersioningAgent` as a normal failed
+output rather than an unhandled exception when no `registry_client` was injected. **No
+local content-hash dedup for this backend** — Azure ML owns versioning for a given asset
+name (registering identical content twice creates two Azure ML versions, unlike the local
+backend's dedup). `OrchestratorWorkflow`'s `dataset_versioning` step supports
+`dataset_registry_backend="azure_ml"` the same way `model_registry`/`deployment` already
+do. CLI: `agentic-mlops version-dataset <dataset_path> --dataset-name ... --backend
+azure_ml --azure-config configs/azure_ml.yaml`.
 
 ### Model Decision Agent (standalone, not part of MVPWorkflow)
 
@@ -471,7 +488,10 @@ something to blindly auto-chain into a training run); Monitoring is excluded too
 `deployment` step supports `deployment_backend="azure_ml"` too — when
 `registry_backend="azure_ml"` was used for a preceding `model_registry` step,
 `azure_model_name`/`azure_model_version` are auto-chained from its output rather
-than needing to be set explicitly on `OrchestratorInput`. Each
+than needing to be set explicitly on `OrchestratorInput`. `dataset_versioning`
+similarly supports `dataset_registry_backend="azure_ml"` (no chaining needed
+there — it's the first Azure ML touchpoint in the pipeline, nothing upstream to
+inherit from). Each
 step's own required inputs are validated up front with a clear error naming the
 missing field, rather than letting a Pydantic `ValidationError` from inside the
 sub-agent's own contract leak out.
@@ -591,9 +611,8 @@ runner variant: `fake`/`local-yolo`/`azure-ml` for training and evaluation, and
 status of every planned item). Still missing:
 
 - Azure ML pipeline components (multi-step AML pipeline instead of a single CommandJob per step)
-- Registering the dataset itself as an Azure ML Data Asset; storing artifacts in Blob/ADLS instead of local disk
+- Storing artifacts in Azure Blob/ADLS instead of local disk (registering the dataset *itself* as an Azure ML Data Asset is now implemented — see `DatasetVersioningAgent` above — but the underlying files still live on local disk either way, uploaded to Azure only as part of that registration call)
 - VOC label format for Dataset Structuring (`LabelFormat` only has `yolo`/`coco`)
-- Azure ML Data Asset registration for `DatasetVersioningAgent` (local filesystem backend only)
 - Docker image build, AKS, and a CI/CD trigger for `DeploymentAgent` — Azure ML Managed Online Endpoint (real serving) is implemented (see above); these three remain out of scope, not started
 - Azure Monitor / Application Insights integration for `MonitoringAgent` — log ingestion is a local JSONL file only, not live endpoint metrics/traces; hard samples are surfaced in a manifest for manual triage, not automatically fed back into Data Intake
 - All 8 originally-unimplemented agents (`LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, `AnnotationAgent`, `DatasetVersioningAgent`, `ModelDecisionAgent`, `DeploymentAgent`, `MonitoringAgent`) **and** the top-level Orchestrator Agent (`OrchestratorWorkflow`, see "Orchestrator" above) are now implemented — every spec in `agentic_mlops_workflow_docs/agents/` has a corresponding implementation.

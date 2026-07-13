@@ -18,21 +18,42 @@ Coverage matrix:
    15.  CLI: version-dataset command exists and succeeds (exit 0)
    16.  CLI: version-dataset exits 1 on missing dataset_path
    17.  CLI: version-dataset exits 1 when validation report says failed
+   18.  AzureMLDatasetRegistryClient registers version 1 via MLClient.data
+   19.  AzureMLDatasetRegistryClient: data asset references the resolved dataset path + tags
+   20.  AzureMLDatasetRegistryClient: no local hash-dedup (registers again unchanged)
+   21.  AzureMLDatasetRegistryClient: SDK failure -> failed output, not an exception
+   22.  create_dataset_registry_client(LOCAL) returns LocalDatasetVersionRegistry
+   23.  create_dataset_registry_client(AZURE_ML) raises a clear ValueError
+   24.  DatasetVersioningAgent resolves backend='azure_ml' via create_dataset_registry_client
+       when no registry_client is injected -> clear ValueError surfaced as a failed output
+   25.  CLI: version-dataset --backend azure_ml without --azure-config exits 1
+   26.  CLI: version-dataset exits 1 on invalid --backend
 """
 
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
 from agentic_mlops.agents.dataset_versioning import DatasetVersioningAgent
+from agentic_mlops.contracts.azure_ml import AzureMLConfig
 from agentic_mlops.contracts.dataset_versioning import (
+    DatasetRegistryBackend,
     DatasetVersioningInput,
     DatasetVersionStatus,
 )
-from agentic_mlops.integrations.dataset_registry import FakeDatasetVersionRegistry, hash_dataset
+from agentic_mlops.integrations.azure_ml_client import FakeAzureMLClientFactory, FakeMLClient
+from agentic_mlops.integrations.dataset_registry import (
+    AzureMLDatasetRegistryClient,
+    FakeDatasetVersionRegistry,
+    LocalDatasetVersionRegistry,
+    create_dataset_registry_client,
+    hash_dataset,
+)
 from agentic_mlops.integrations.mlflow_client import FakeMLflowClient
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -421,3 +442,208 @@ def test_cli_version_dataset_exits_1_when_validation_failed(tmp_path: Path) -> N
     )
     assert result.exit_code == 1
     assert "BLOCKED" in result.output
+
+
+# ── 18-21. AzureMLDatasetRegistryClient ─────────────────────────────────────────
+# azure-ai-ml is NOT required to be installed — azure.ai.ml.constants/entities are
+# mocked; Azure connectivity is replaced with FakeAzureMLClientFactory/FakeMLClient,
+# same pattern as TestAzureMLModelRegistryClient in test_model_registry.py.
+
+
+def _minimal_azure_config(**overrides: object) -> AzureMLConfig:
+    defaults: dict = {
+        "subscription_id": "sub-123",
+        "resource_group": "rg-test",
+        "workspace_name": "ws-test",
+        "compute_name": "gpu-cluster",
+        "environment": {"mode": "registered", "registered_environment": "azureml:yolo-env:1"},
+    }
+    defaults.update(overrides)
+    return AzureMLConfig.model_validate(defaults)
+
+
+def _mock_azure_ml_entities_modules():
+    """Return (mock_constants, mock_entities) with a fake Data() constructor."""
+    mock_asset_types = MagicMock(URI_FOLDER="uri_folder")
+    mock_constants = MagicMock(AssetTypes=mock_asset_types)
+
+    def fake_data(**kwargs):
+        m = MagicMock()
+        m.path = kwargs.get("path")
+        m.name = kwargs.get("name")
+        m.type = kwargs.get("type")
+        m.description = kwargs.get("description")
+        m.tags = kwargs.get("tags")
+        return m
+
+    mock_entities = MagicMock(Data=fake_data)
+    return mock_constants, mock_entities
+
+
+class TestAzureMLDatasetRegistryClient:
+    def test_registers_version_1(self, tmp_path: Path) -> None:
+        ds = tmp_path / "ds"
+        _make_structured_dataset(ds)
+        factory = FakeAzureMLClientFactory()
+        client = AzureMLDatasetRegistryClient(_minimal_azure_config(), client_factory=factory)
+        inp = DatasetVersioningInput(
+            dataset_path=str(ds), dataset_name="azure-ds", backend=DatasetRegistryBackend.AZURE_ML
+        )
+
+        mock_constants, mock_entities = _mock_azure_ml_entities_modules()
+        with patch.dict(
+            sys.modules,
+            {"azure.ai.ml.constants": mock_constants, "azure.ai.ml.entities": mock_entities},
+        ):
+            result = client.register(inp, ["scratch", "dent"], "passed", None, tmp_path / "out")
+
+        assert result.success is True
+        assert result.status == DatasetVersionStatus.REGISTERED
+        assert result.version == 1
+        assert "azure-ds" in result.dataset_version_path
+
+    def test_data_asset_references_dataset_path_and_tags(self, tmp_path: Path) -> None:
+        ds = tmp_path / "ds"
+        _make_structured_dataset(ds)
+        factory = FakeAzureMLClientFactory()
+        client = AzureMLDatasetRegistryClient(_minimal_azure_config(), client_factory=factory)
+        inp = DatasetVersioningInput(
+            dataset_path=str(ds), dataset_name="azure-ds", backend=DatasetRegistryBackend.AZURE_ML
+        )
+
+        mock_constants, mock_entities = _mock_azure_ml_entities_modules()
+        with patch.dict(
+            sys.modules,
+            {"azure.ai.ml.constants": mock_constants, "azure.ai.ml.entities": mock_entities},
+        ):
+            client.register(inp, ["scratch", "dent"], "passed", None, tmp_path / "out")
+
+        fake_client: FakeMLClient = factory.last_client
+        data_obj = fake_client.data.created[0]
+        assert data_obj.name == "azure-ds"
+        assert data_obj.path == str(ds.resolve())
+        assert data_obj.tags == {"classes": "scratch,dent", "num_classes": "2"}
+
+    def test_no_local_dedup_registers_again_unchanged(self, tmp_path: Path) -> None:
+        """Unlike the local backend, registering identical content twice is not
+        deduplicated — Azure ML owns versioning for this backend."""
+        ds = tmp_path / "ds"
+        _make_structured_dataset(ds)
+
+        class _SingleClientFactory:
+            def __init__(self, client: FakeMLClient) -> None:
+                self._client = client
+
+            def create(self, config: AzureMLConfig) -> FakeMLClient:
+                return self._client
+
+        shared_client = FakeMLClient()
+        client = AzureMLDatasetRegistryClient(
+            _minimal_azure_config(), client_factory=_SingleClientFactory(shared_client)
+        )
+        inp = DatasetVersioningInput(
+            dataset_path=str(ds), dataset_name="azure-ds", backend=DatasetRegistryBackend.AZURE_ML
+        )
+
+        mock_constants, mock_entities = _mock_azure_ml_entities_modules()
+        with patch.dict(
+            sys.modules,
+            {"azure.ai.ml.constants": mock_constants, "azure.ai.ml.entities": mock_entities},
+        ):
+            r1 = client.register(inp, ["scratch"], None, None, tmp_path / "out1")
+            r2 = client.register(inp, ["scratch"], None, None, tmp_path / "out2")
+
+        assert r1.version == 1
+        assert r2.version == 2
+        assert r2.status == DatasetVersionStatus.REGISTERED
+
+    def test_sdk_failure_produces_failed_output(self, tmp_path: Path) -> None:
+        ds = tmp_path / "ds"
+        _make_structured_dataset(ds)
+
+        class _RaisingFactory:
+            def create(self, config: AzureMLConfig) -> FakeMLClient:
+                raise RuntimeError("Azure authentication failed.")
+
+        client = AzureMLDatasetRegistryClient(
+            _minimal_azure_config(), client_factory=_RaisingFactory()
+        )
+        inp = DatasetVersioningInput(
+            dataset_path=str(ds), dataset_name="azure-ds", backend=DatasetRegistryBackend.AZURE_ML
+        )
+        result = client.register(inp, ["scratch"], None, None, tmp_path / "out")
+
+        assert result.success is False
+        assert result.status == DatasetVersionStatus.FAILED
+        assert any("authentication" in e.lower() for e in result.errors)
+
+
+# ── 22-23. create_dataset_registry_client() ─────────────────────────────────────
+
+
+def test_create_dataset_registry_client_local_returns_local_registry() -> None:
+    client = create_dataset_registry_client(DatasetRegistryBackend.LOCAL)
+    assert isinstance(client, LocalDatasetVersionRegistry)
+
+
+def test_create_dataset_registry_client_azure_ml_raises_clear_error() -> None:
+    try:
+        create_dataset_registry_client(DatasetRegistryBackend.AZURE_ML)
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "AzureMLDatasetRegistryClient" in str(exc)
+
+
+# ── 24. DatasetVersioningAgent resolves backend without an injected client ─────
+
+
+def test_agent_azure_ml_backend_without_injected_client_fails_clearly(tmp_path: Path) -> None:
+    ds = tmp_path / "ds"
+    _make_structured_dataset(ds)
+
+    agent = DatasetVersioningAgent(artifacts_dir=tmp_path / "artifacts")
+    result = agent.run(
+        DatasetVersioningInput(
+            dataset_path=str(ds),
+            dataset_name="ds",
+            registry_dir=str(tmp_path / "registry"),
+            backend=DatasetRegistryBackend.AZURE_ML,
+        )
+    )
+    assert result.success is False
+    assert "AzureMLDatasetRegistryClient" in result.message
+
+
+# ── 25-26. CLI azure_ml backend ─────────────────────────────────────────────────
+
+
+def test_cli_version_dataset_azure_ml_requires_azure_config(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from agentic_mlops.cli.main import app
+
+    ds = tmp_path / "ds"
+    _make_structured_dataset(ds)
+
+    result = CliRunner().invoke(
+        app,
+        ["version-dataset", str(ds), "--dataset-name", "ds", "--backend", "azure_ml"],
+    )
+    assert result.exit_code == 1
+    assert "azure-config" in result.output
+
+
+def test_cli_version_dataset_exits_1_on_invalid_backend(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from agentic_mlops.cli.main import app
+
+    ds = tmp_path / "ds"
+    _make_structured_dataset(ds)
+
+    result = CliRunner().invoke(
+        app,
+        ["version-dataset", str(ds), "--dataset-name", "ds", "--backend", "bogus"],
+    )
+    assert result.exit_code == 1
+    assert "Invalid backend" in result.output

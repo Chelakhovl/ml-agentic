@@ -3,8 +3,11 @@
 > Составлено 2026-07-11 по факту чтения исходного кода (не по памяти/докам —
 > все пути к файлам и имена классов проверены `grep`/`Read` непосредственно
 > перед записью этого документа). Все 489 unit-тестов проходят на момент
-> написания. Обновлено 2026-07-13: исправлена найденная в этом же документе
-> нерабочая `azure_integration` pytest-команда — см. раздел 10.
+> написания. Обновлено 2026-07-13: (1) исправлена найденная в этом же
+> документе нерабочая `azure_integration` pytest-команда — см. раздел 10;
+> (2) реализован Azure ML Data Asset backend для Dataset Registry (был
+> единственным реестром без Azure-варианта) — см. раздел 8. 500/500
+> unit-тестов на текущий момент.
 
 Документ описывает: (1) все "клиенты" — обёртки над внешними системами
 (Azure ML, MLflow, локальные реестры), (2) что из них реально работает, а
@@ -24,7 +27,7 @@
 | 4 | Azure ML Online Endpoint (serving) | `integrations/azure_ml_online_endpoint.py` | ✅ реальный |
 | 5 | MLflow клиент | `integrations/mlflow_client.py` | ✅ реальный (NoOp/Local/Fake) |
 | 6 | Model Registry | `integrations/model_registry.py` | ✅ реальный (Local/MLflow/AzureML) |
-| 7 | Dataset Registry | `integrations/dataset_registry.py` | ✅ реальный (Local only) |
+| 7 | Dataset Registry | `integrations/dataset_registry.py` | ✅ реальный (Local + Azure ML) |
 | 8 | Workflow State Store | `integrations/workflow_state_store.py` | ✅ реальный (чисто локальный, JSON) |
 
 Общий паттерн для всех "внешних" клиентов (1, 2, 3, 4, 6-частично):
@@ -207,9 +210,20 @@ Azure-клиента (training/eval/registry/serving). Секции:
   (SHA-256 над отсортированными парами `(relative_path, file_sha256)`)
   — если хэш совпадает с существующей версией, новая копия НЕ
   создаётся, возвращается существующая версия (`status=deduplicated`).
+- **`AzureMLDatasetRegistryClient`** — РЕАЛЬНЫЙ (добавлено 2026-07-13).
+  Настоящий вызов `MLClient.data.create_or_update()`, регистрирует
+  директорию датасета как Azure ML Data asset (`AssetTypes.URI_FOLDER`).
+  Как и `AzureMLModelRegistryClient`, не может быть создан
+  автоматически — `create_dataset_registry_client()` кидает `ValueError`
+  для `AZURE_ML` (нужен `AzureMLConfig` извне), CLI строит клиент вручную
+  (`version-dataset --backend azure_ml --azure-config ...`). **Важно: НЕТ
+  локальной дедупликации по хэшу для этого бэкенда** — Azure ML сам
+  владеет версионированием ассета, повторная регистрация одинакового
+  контента создаст новую Azure-версию (в отличие от local backend).
+  `OrchestratorWorkflow`'s `dataset_versioning`-шаг поддерживает
+  `dataset_registry_backend="azure_ml"` так же, как `model_registry`/
+  `deployment`.
 - **`FakeDatasetVersionRegistry`** — тестовый дублёр.
-- **Azure ML Data Asset бэкенд — НЕ РЕАЛИЗОВАН.** Датасеты версионируются
-  только локально. Это единственный из реестров без Azure-варианта.
 
 ---
 
@@ -246,8 +260,8 @@ State Store не существует — это осознанное решен
    реализован только `local` (локальный релиз) и `azure_ml` (Managed
    Online Endpoint) бэкенды. Классический контейнерный деплой (свой
    Docker-образ + собственный Kubernetes) не начат.
-4. **Azure ML Data Asset для `DatasetVersioningAgent`** — только
-   локальный backend (см. п.8).
+4. ~~Azure ML Data Asset для `DatasetVersioningAgent`~~ — **РЕАЛИЗОВАНО
+   2026-07-13**, см. раздел 8 (`AzureMLDatasetRegistryClient`).
 5. **VOC label format** для Dataset Structuring Agent — есть только
    `yolo`/`coco`.
 6. **Многошаговый Azure ML Pipeline** — сейчас каждый Azure-шаг
