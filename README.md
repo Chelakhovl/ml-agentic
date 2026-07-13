@@ -158,9 +158,18 @@ After submission, the job URL appears in `training_output.json` as `azure_studio
 
 ### Integration test
 
+A lightweight, opt-in connectivity check — confirms your `azure_ml.yaml` +
+credentials can actually reach the configured workspace and compute target
+(read-only API calls, no compute spin-up, effectively free). Automatically
+skipped unless `--azure-config` is passed, so it never runs by accident as
+part of `pytest tests/unit`. It does **not** submit a real training job —
+that's the separate, manual, explicitly-costly step above (`train --runner
+azure-ml`).
+
 ```bash
-# Runs a real 1-epoch job — requires valid azure_ml.yaml and Azure auth
-pytest -m azure_integration --azure-config configs/azure_ml.yaml
+pip install -e ".[dev,azure]"
+az login   # or set AZURE_CLIENT_ID/AZURE_TENANT_ID/AZURE_CLIENT_SECRET
+pytest tests/integration -m azure_integration --azure-config configs/azure_ml.yaml
 ```
 
 ## Azure ML Evaluation

@@ -4,6 +4,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# ── pytest CLI options ──────────────────────────────────────────────────────────
+# --azure-config backs the opt-in `azure_integration`-marked tests under
+# tests/integration/ (see pyproject.toml's markers list). Registered here
+# rather than in a package-level conftest since testpaths=["tests"] makes
+# this file the collection root for both tests/unit and tests/integration.
+
+
+def pytest_addoption(parser) -> None:  # noqa: ANN001
+    parser.addoption(
+        "--azure-config",
+        action="store",
+        default=None,
+        help="Path to a real azure_ml.yaml -- enables tests/integration/*azure_integration* tests.",
+    )
+
+
 # ── Fixture builders ───────────────────────────────────────────────────────────
 
 

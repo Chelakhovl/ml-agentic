@@ -48,3 +48,6 @@ select = ["E", "F", "I", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+markers = [
+    "azure_integration: requires a real Azure ML workspace + credentials (az login or service principal env vars). Opt-in only -- automatically skipped unless --azure-config is passed. Run with: pytest tests/integration -m azure_integration --azure-config configs/azure_ml.yaml",
+]

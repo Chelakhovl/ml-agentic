@@ -22,8 +22,9 @@ pytest tests/unit/test_dataset_validator.py -v
 # Run with coverage
 pytest tests/unit --cov=agentic_mlops
 
-# Run Azure integration test (requires valid azure_ml.yaml + Azure auth)
-pytest -m azure_integration --azure-config configs/azure_ml.yaml
+# Run the real Azure ML connectivity check (opt-in; auto-skipped without
+# --azure-config, so this never runs by accident in `pytest tests/unit`)
+pytest tests/integration -m azure_integration --azure-config configs/azure_ml.yaml
 
 # Lint / format
 ruff check src tests
