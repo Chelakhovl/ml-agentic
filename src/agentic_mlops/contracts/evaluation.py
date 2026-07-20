@@ -16,6 +16,7 @@ class EvaluationMode(StrEnum):
     LOCAL_DRY_RUN = "local_dry_run"
     LOCAL_EVAL = "local_eval"
     AZURE_EVAL = "azure_eval"
+    AZURE_PIPELINE_EVAL = "azure_pipeline_eval"
 
 
 class EvaluationRecommendation(StrEnum):

@@ -3,10 +3,10 @@
 Per agentic_mlops_workflow_docs/agents/00_orchestrator_agent.md's own "MVP
 implementation" note: "Orchestrator may be a simple Python class + JSON state
 file" (`runs/<workflow_id>/state.json`, `runs/<workflow_id>/audit_log.jsonl`).
-No State Store / Policy Engine / Approval Store / Notification service exists
-as a separate networked component — those are all local-disk concerns here,
-same "no real infra beyond what's needed" pattern as every other standalone
-agent in this codebase.
+No State Store / Policy Engine / Approval Store exists as a separate
+networked component — those are all local-disk concerns here. Teams/Slack
+webhook notifications are supported via ``OrchestratorInput.notifications``
+(``NotificationConfig``) and ``WebhookNotificationClient``.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from .dataset_structuring import LabelFormat, SplitStrategy
 from .dataset_versioning import DatasetRegistryBackend
 from .deployment import DeploymentBackend, DeploymentTarget, ExportFormat
 from .model_registry import RegistryBackend
+from .notification import NotificationConfig
 from .training_approval import TrainingApprovalAction
 
 # Canonical pipeline order. Every value in OrchestratorInput.steps must be one
@@ -138,6 +139,11 @@ class OrchestratorInput(BaseModel):
     model_name: str = "yolo-model"
     registry_backend: RegistryBackend = RegistryBackend.LOCAL
     registry_dir: str = "outputs/model_registry"
+
+    # ── notifications ────────────────────────────────────────────────────────
+    # Optional Teams/Slack webhook notifications for key pipeline events.
+    # Set teams_webhook_url and/or slack_webhook_url in orchestrator.yaml.
+    notifications: NotificationConfig | None = None
 
     # ── deployment ───────────────────────────────────────────────────────────
     deployment_target: DeploymentTarget = DeploymentTarget.STAGING

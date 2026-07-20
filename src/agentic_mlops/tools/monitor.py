@@ -1,8 +1,10 @@
 """Model monitor — the core tool used by the Monitoring Agent.
 
-No Azure Monitor / Application Insights / hard-sample-mining infrastructure
-exists in this codebase (same "standalone, no real infra" pattern as
-tools/deployer.py — DeploymentAgent's "endpoint" is a local release
+Supports two log sources (MonitoringInput.source):
+  "local"         — reads a local JSON-Lines predictions log (original behaviour)
+  "azure_monitor" — queries Application Insights via ApplicationInsightsLogClient
+
+Legacy docstring note: a local release
 directory, not a live serving target). Monitoring here means reading a local
 JSON-Lines predictions log — the kind of export a real serving stack would
 eventually produce from Azure Monitor/App Insights — and computing
@@ -33,6 +35,7 @@ import math
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agentic_mlops.contracts.monitoring import (
     HardSample,
@@ -43,6 +46,9 @@ from agentic_mlops.contracts.monitoring import (
 )
 from agentic_mlops.observability.logging import get_logger
 
+if TYPE_CHECKING:
+    from agentic_mlops.integrations.appinsights_log_client import InferenceLogClient
+
 logger = get_logger(__name__)
 
 _WINDOW_RE = re.compile(r"^(\d+)(s|m|h|d)$")
@@ -50,13 +56,53 @@ _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
 class ModelMonitor:
-    """Reads a predictions log and produces a monitoring report + hard sample manifest."""
+    """Reads a predictions log and produces a monitoring report + hard sample manifest.
 
-    def run(self, inp: MonitoringInput, artifacts_dir: Path) -> MonitoringOutput:
+    Accepts an optional ``log_client`` injection for testing or for non-local
+    sources (e.g. ApplicationInsightsLogClient).  When not injected, the client
+    is constructed automatically based on ``MonitoringInput.source``.
+    """
+
+    def __init__(
+        self,
+        log_client: InferenceLogClient | None = None,
+    ) -> None:
+        self._log_client = log_client
+
+    def _resolve_client(
+        self, inp: MonitoringInput, window_seconds: int
+    ) -> tuple[InferenceLogClient | None, MonitoringOutput | None]:
+        """Return (client, None) on success or (None, error_output) on failure."""
+        from agentic_mlops.integrations.appinsights_log_client import (  # noqa: PLC0415
+            ApplicationInsightsLogClient,
+            LocalFileLogClient,
+        )
+
+        if self._log_client is not None:
+            return self._log_client, None
+
+        if inp.source == "azure_monitor":
+            if not inp.app_insights_workspace_id:
+                return None, _failed(
+                    "app_insights_workspace_id is required when source='azure_monitor'."
+                )
+            try:
+                client: InferenceLogClient = ApplicationInsightsLogClient(
+                    workspace_id=inp.app_insights_workspace_id,
+                    endpoint_name=inp.endpoint_name,
+                    window_seconds=window_seconds,
+                )
+            except RuntimeError as exc:
+                return None, _failed(str(exc))
+            return client, None
+
+        # source == "local" (default)
         log_path = Path(inp.predictions_log_path)
         if not log_path.is_file():
-            return _failed(f"predictions_log_path not found: {log_path}")
+            return None, _failed(f"predictions_log_path not found: {log_path}")
+        return LocalFileLogClient(log_path), None
 
+    def run(self, inp: MonitoringInput, artifacts_dir: Path) -> MonitoringOutput:
         window_seconds = _parse_window(inp.monitoring_window)
         if window_seconds is None:
             return _failed(
@@ -64,9 +110,17 @@ class ModelMonitor:
                 "Expected e.g. '24h', '7d', '30m', '60s'."
             )
 
-        records, warnings = _load_records(log_path)
+        log_client, err = self._resolve_client(inp, window_seconds)
+        if err is not None:
+            return err
+
+        assert log_client is not None
+        records, warnings = log_client.fetch_records()
         if not records:
-            return _failed(f"No prediction records found in {log_path}")
+            source_desc = (
+                inp.app_insights_workspace_id or inp.predictions_log_path or inp.source
+            )
+            return _failed(f"No prediction records found in {source_desc}")
 
         filtered, window_start, window_end = _filter_window(records, window_seconds)
         if not filtered:

@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — MLOps{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Dashboard</h1>
+  <p>Overview of all pipeline runs</p>
+</div>
+
+<div class="stat-row">
+  <div class="stat-card">
+    <div class="stat-label">Total Runs</div>
+    <div class="stat-value">{{ stats.total }}</div>
+  </div>
+  <div class="stat-card green">
+    <div class="stat-label">Completed</div>
+    <div class="stat-value">{{ stats.completed }}</div>
+  </div>
+  <div class="stat-card orange">
+    <div class="stat-label">Running / Pending</div>
+    <div class="stat-value">{{ stats.running + stats.pending }}</div>
+  </div>
+  <div class="stat-card red">
+    <div class="stat-label">Failed / Blocked</div>
+    <div class="stat-value">{{ stats.failed }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px">
+    <div class="card-title" style="margin-bottom:0">Recent Workflows</div>
+    {% if workflows %}
+    <div style="display:flex; gap:10px; align-items:center">
+      <input
+        type="text"
+        id="filterText"
+        placeholder="Filter by ID…"
+        style="width:200px; padding:7px 11px; border:1px solid var(--border); border-radius:8px; font-size:13px; outline:none"
+        oninput="applyFilter()"
+      >
+      <select
+        id="filterStatus"
+        onchange="applyFilter()"
+        style="padding:7px 11px; border:1px solid var(--border); border-radius:8px; font-size:13px; background:var(--surface); color:var(--text); outline:none"
+      >
+        <option value="">All statuses</option>
+        <option value="running">Running</option>
+        <option value="pending_approval">Pending Approval</option>
+        <option value="completed">Completed</option>
+        <option value="failed">Failed</option>
+        <option value="blocked">Blocked</option>
+      </select>
+      <span id="filterCount" class="muted" style="font-size:12px; white-space:nowrap"></span>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if workflows %}
+  <div class="table-wrap">
+    <table id="wfTable">
+      <thead>
+        <tr>
+          <th>Workflow ID</th>
+          <th>Status</th>
+          <th>Steps</th>
+          <th>Current State</th>
+          <th>Last Agent</th>
+          <th>Started</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for wf in workflows %}
+        <tr data-wf-id="{{ wf.workflow_id | lower }}" data-status="{{ wf.get('status', '') }}">
+          <td>
+            <a href="/workflows/{{ wf.workflow_id }}" class="table-link mono">{{ wf.workflow_id }}</a>
+          </td>
+          <td><span class="badge {{ status_class(wf.get('status', '')) }}">{{ wf.get('status', '—') }}</span></td>
+          <td class="muted mono" style="font-size:11.5px">
+            {% set steps = wf.get('steps', []) %}
+            {% set done = wf.get('completed_steps', []) | length %}
+            {{ done }}/{{ steps | length }}
+          </td>
+          <td class="muted mono" style="font-size:11.5px">{{ wf.get('current_state', '—') }}</td>
+          <td class="muted">{{ wf.get('last_agent') or '—' }}</td>
+          <td class="muted">{{ fmt_dt(wf.get('started_at')) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p id="filterEmpty" class="muted" style="padding:16px; display:none; text-align:center">No workflows match the current filter.</p>
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-icon">◈</div>
+    <p>No workflow runs yet.<br><a href="/workflows/new">Start your first run →</a></p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function applyFilter() {
+  const text = (document.getElementById('filterText').value || '').toLowerCase().trim();
+  const status = document.getElementById('filterStatus').value;
+  const rows = document.querySelectorAll('#wfTable tbody tr');
+  let visible = 0;
+  rows.forEach(row => {
+    const id = row.getAttribute('data-wf-id') || '';
+    const rowStatus = row.getAttribute('data-status') || '';
+    const show = (!text || id.includes(text)) && (!status || rowStatus === status);
+    row.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  const countEl = document.getElementById('filterCount');
+  const emptyEl = document.getElementById('filterEmpty');
+  if (text || status) {
+    countEl.textContent = visible + ' of ' + rows.length + ' shown';
+    emptyEl.style.display = visible === 0 ? '' : 'none';
+  } else {
+    countEl.textContent = '';
+    emptyEl.style.display = 'none';
+  }
+}
+</script>
+{% endblock %}

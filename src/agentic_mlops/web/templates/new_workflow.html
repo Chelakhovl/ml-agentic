@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}New Workflow — MLOps{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>New Workflow Run</h1>
+  <p>Configure and start a dry-run pipeline. For real training, use the CLI.</p>
+</div>
+
+{% if error %}
+<div class="alert alert-error"><strong>Error:</strong> {{ error }}</div>
+{% endif %}
+{% if info %}
+<div class="alert alert-info">{{ info }}</div>
+{% endif %}
+
+{% if cli_command %}
+<div class="alert alert-success">
+  <strong>Run this command to start the workflow:</strong>
+</div>
+<pre class="cli"><button class="copy-btn">Copy</button>{{ cli_command }}</pre>
+{% endif %}
+
+<form method="POST" action="/workflows/new">
+<div class="two-col">
+
+  <div>
+    <div class="card">
+      <div class="card-title">Identity</div>
+
+      <div class="form-group">
+        <label>Workflow ID <span class="hint">(unique per run)</span></label>
+        <input type="text" name="workflow_id"
+               value="{{ default_id }}" required
+               placeholder="wf_20240101_120000">
+      </div>
+
+      <div class="form-group">
+        <label>Model Name</label>
+        <input type="text" name="model_name" value="yolo-model" placeholder="yolo-model">
+      </div>
+
+      <div class="form-group">
+        <label>Run Mode</label>
+        <div class="toggle-group">
+          <label class="toggle">
+            <input type="checkbox" name="dry_run" value="true" checked id="dry_run_toggle">
+            <span class="toggle-slider"></span>
+          </label>
+          <span id="dry_run_label">Dry Run (no real training)</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Dataset</div>
+      <div class="form-group">
+        <label>Dataset Path <span class="hint">(local path to YOLO dataset)</span></label>
+        <input type="text" name="dataset_path" placeholder="/path/to/dataset">
+      </div>
+      <div class="form-group">
+        <label>data.yaml Path</label>
+        <input type="text" name="data_yaml_path" placeholder="/path/to/dataset/data.yaml">
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Training</div>
+      <div class="form-group">
+        <label>Training Runner</label>
+        <select name="training_runner">
+          <option value="fake" selected>fake (dry-run, writes plan only)</option>
+          <option value="local-yolo">local-yolo (requires ultralytics)</option>
+          <option value="azure-ml">azure-ml (requires azure-config)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Training Config Path <span class="hint">(optional)</span></label>
+        <input type="text" name="training_config_path" placeholder="configs/training.yaml">
+      </div>
+      <div class="form-group">
+        <label>Promotion Policy Path <span class="hint">(optional)</span></label>
+        <input type="text" name="promotion_policy_path" placeholder="configs/promotion_policy.yaml">
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Approval (optional)</div>
+      <div class="form-group">
+        <label>Approver Name</label>
+        <input type="text" name="approver" placeholder="jane.doe">
+      </div>
+      <div class="form-group">
+        <label>Pre-set Approval Action <span class="hint">(skip interactive gate)</span></label>
+        <select name="approval_action">
+          <option value="">— choose at runtime —</option>
+          <option value="approve_model">approve_model</option>
+          <option value="reject_model">reject_model</option>
+          <option value="request_retraining">request_retraining</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <div class="card-title">Pipeline Steps</div>
+      <p class="muted mb-2" style="font-size:12.5px">Select the steps to include (in canonical order).</p>
+      <div class="checkboxes">
+        {% for step in pipeline_steps %}
+        <label>
+          <input type="checkbox" name="steps" value="{{ step }}"
+            {{ 'checked' if step in default_steps else '' }}>
+          {{ step }}
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="alert alert-info" style="margin-top:0">
+      <strong>Tip:</strong> The default 5 steps match the original MVP pipeline.
+      Add <code>training_approval</code> (H4 gate) or <code>data_intake</code>/<code>dataset_versioning</code>
+      as needed. Steps run in canonical pipeline order regardless of selection order.
+    </div>
+
+    <div style="display:flex; gap:10px; margin-top:4px">
+      <button type="submit" class="btn btn-primary">▶ Start Workflow</button>
+      <a href="/" class="btn btn-secondary">Cancel</a>
+    </div>
+  </div>
+
+</div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const toggle = document.getElementById('dry_run_toggle');
+  const label  = document.getElementById('dry_run_label');
+  toggle.addEventListener('change', () => {
+    label.textContent = toggle.checked
+      ? 'Dry Run (no real training)'
+      : 'Real Run — will show CLI command';
+  });
+</script>
+{% endblock %}

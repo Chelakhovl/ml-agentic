@@ -61,7 +61,7 @@ def _load_class_names(data_yaml_path: str) -> list[str]:
     return list(names)
 
 
-def _load_policy(inp: EvaluationInput) -> PromotionPolicy:
+def load_policy(inp: EvaluationInput) -> PromotionPolicy:
     """Load PromotionPolicy from evaluation_config_path, promotion_policy_path, or use default."""
     if inp.evaluation_config_path:
         cfg = EvaluationConfig.from_yaml(inp.evaluation_config_path)
@@ -71,7 +71,7 @@ def _load_policy(inp: EvaluationInput) -> PromotionPolicy:
     return PromotionPolicy.default()
 
 
-def _metrics_from_json(data: dict) -> EvaluationMetrics:
+def metrics_from_json(data: dict) -> EvaluationMetrics:
     """Parse the plain-dict metrics.json produced by azure_jobs/eval_yolo.py."""
     per_class_raw: dict = data.get("per_class_metrics", {})
     per_class = {
@@ -197,7 +197,7 @@ class FakeEvaluationRunner:
             per_class_metrics={cls: _DRY_RUN_PER_CLASS for cls in class_names},
         )
 
-        policy = _load_policy(inp)
+        policy = load_policy(inp)
         recommendation, passed_checks, failed_checks = evaluate_metrics_against_policy(
             metrics, policy
         )
@@ -325,7 +325,7 @@ class LocalYOLOEvaluationRunner:
                 eval_artifacts.append(str(dst))
                 logger.info("Collected artifact", extra={"artifact": artifact_name})
 
-        policy = _load_policy(inp)
+        policy = load_policy(inp)
         recommendation, passed_checks, failed_checks = evaluate_metrics_against_policy(
             metrics, policy
         )
@@ -441,10 +441,10 @@ class AzureMLEvaluationRunner:
                     completed_at,
                 )
 
-            metrics = _metrics_from_json(json.loads(metrics_path.read_text(encoding="utf-8")))
+            metrics = metrics_from_json(json.loads(metrics_path.read_text(encoding="utf-8")))
             eval_artifacts = self._collect_plot_artifacts(artifacts_dir)
 
-            policy = _load_policy(inp)
+            policy = load_policy(inp)
             recommendation, passed_checks, failed_checks = evaluate_metrics_against_policy(
                 metrics, policy
             )

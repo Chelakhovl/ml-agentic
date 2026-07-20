@@ -73,3 +73,19 @@ registry_dir: outputs/model_registry
 # azure_model_version: 3
 
 # azure_config_path: configs/azure_ml.yaml   # required for any azure-ml/azure_ml choice above
+
+# ── notifications (optional) ────────────────────────────────────────────────
+# Send Teams/Slack webhook messages on key pipeline events.
+# Webhook URLs contain secrets — keep them in a separate config file and do
+# NOT commit them.  notify_on controls which events fire a POST; the defaults
+# shown below are a sensible starting point.
+# notifications:
+#   teams_webhook_url: https://outlook.office.com/webhook/YOUR-WEBHOOK-URL
+#   slack_webhook_url: https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+#   notify_on:
+#     - step_failed
+#     - workflow_completed
+#     - workflow_failed
+#     - workflow_blocked
+#     - workflow_pending_approval
+#   # Add step_started / step_completed for verbose per-step notifications.

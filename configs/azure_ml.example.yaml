@@ -24,6 +24,23 @@ data:
   input_mode: ro_mount
   asset_uri: null
 
+# 2-step train+eval PipelineJob settings — used by `--training-runner azure-ml-pipeline`.
+pipeline:
+  timeout_minutes: 240
+  stream_logs: true
+  download_outputs: true
+  train_output_name: model_output
+  eval_output_name: eval_output
+
+# Blob Storage artifact sync — uploads per-step artifacts after each workflow step.
+# Requires: pip install -e ".[azure]"
+storage:
+  enabled: false
+  datastore_name: workspaceblobstore  # auto-resolves account/container from workspace
+  artifact_prefix: agentic-mlops
+  # account_url: https://myaccount.blob.core.windows.net  # explicit override (no MLClient call)
+  # container_name: my-artifacts                          # explicit override
+
 # Managed Online Endpoint settings — used by `deploy-model --backend azure_ml`.
 serving:
   instance_type: Standard_DS2_v2

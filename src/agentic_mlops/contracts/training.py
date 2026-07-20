@@ -16,6 +16,7 @@ class TrainingMode(StrEnum):
     LOCAL_DRY_RUN = "local_dry_run"
     LOCAL_TRAIN = "local_train"
     AZURE_TRAIN = "azure_train"
+    AZURE_PIPELINE = "azure_pipeline"
 
 
 def training_mode_to_runner(mode: TrainingMode) -> str:
@@ -27,6 +28,7 @@ def training_mode_to_runner(mode: TrainingMode) -> str:
         TrainingMode.LOCAL_DRY_RUN: "fake",
         TrainingMode.LOCAL_TRAIN: "local-yolo",
         TrainingMode.AZURE_TRAIN: "azure-ml",
+        TrainingMode.AZURE_PIPELINE: "azure-ml-pipeline",
     }
     return _MAP.get(mode, str(mode))
 
@@ -100,7 +102,7 @@ class TrainingOutput(ToolResult):
     training_artifacts: list[TrainingArtifact] = Field(default_factory=list)
     mode: TrainingMode = TrainingMode.LOCAL_DRY_RUN
 
-    # Azure ML — populated only for AZURE_TRAIN mode
+    # Azure ML — populated only for AZURE_TRAIN / AZURE_PIPELINE modes
     azure_job_name: str | None = None
     azure_job_status: str | None = None
     azure_studio_url: str | None = None
@@ -110,6 +112,8 @@ class TrainingOutput(ToolResult):
     azure_output_uri: str | None = None
     remote_started_at: str | None = None
     remote_completed_at: str | None = None
+    # Populated by AzureMLPipelineRunner — path to the eval output written during pipeline run
+    pipeline_eval_output_path: str | None = None
 
     @computed_field
     @property

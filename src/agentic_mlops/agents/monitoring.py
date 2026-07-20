@@ -1,9 +1,11 @@
 """Monitoring Agent — watches a deployed model's predictions log for drift/quality issues.
 
-Reads a local JSON-Lines predictions log (no Azure Monitor / Application
-Insights integration exists in this codebase — see tools/monitor.py),
-computes latency/error/confidence/drift signals, mines hard samples for
-human review, and recommends an action. Never triggers retraining itself —
+Supports two inference log sources (set via MonitoringInput.source):
+  "local"         — reads a local JSON-Lines predictions log (default)
+  "azure_monitor" — queries Application Insights via ApplicationInsightsLogClient
+
+Computes latency/error/confidence/drift signals, mines hard samples for human
+review, and recommends an action. Never triggers retraining itself —
 only recommends — matching the "no auto-promote" rule every other agent in
 this codebase already follows.
 """
@@ -11,6 +13,7 @@ this codebase already follows.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agentic_mlops.agents.base import BaseAgent
 from agentic_mlops.contracts.monitoring import MonitoringInput, MonitoringOutput
@@ -18,9 +21,16 @@ from agentic_mlops.integrations.mlflow_client import MLflowTrackingClientBase
 from agentic_mlops.tools.monitor import ModelMonitor
 from agentic_mlops.tools.report_writer import ReportWriter
 
+if TYPE_CHECKING:
+    from agentic_mlops.integrations.appinsights_log_client import InferenceLogClient
+
 
 class MonitoringAgent(BaseAgent):
     """Analyzes a predictions log and produces a monitoring_report + hard_samples_manifest.
+
+    Pass ``log_client`` to inject a custom InferenceLogClient (e.g.
+    ApplicationInsightsLogClient or FakeInferenceLogClient for tests).
+    When None, the client is resolved from MonitoringInput.source at run time.
 
     Output artifacts:
         artifacts_dir/hard_samples_manifest.json
@@ -32,11 +42,12 @@ class MonitoringAgent(BaseAgent):
         self,
         artifacts_dir: Path,
         monitor: ModelMonitor | None = None,
+        log_client: InferenceLogClient | None = None,
         mlflow_client: MLflowTrackingClientBase | None = None,
         mlflow_run_id: str | None = None,
     ) -> None:
         super().__init__(artifacts_dir)
-        self._monitor = monitor or ModelMonitor()
+        self._monitor = monitor or ModelMonitor(log_client=log_client)
         self._report_writer = ReportWriter()
         self._mlflow = mlflow_client
         self._mlflow_run_id = mlflow_run_id

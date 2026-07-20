@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}{{ state.workflow_id }} — MLOps{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>
+    <span class="mono" style="font-size:18px">{{ state.workflow_id }}</span>
+    &nbsp;<span class="badge {{ status_class(state.get('status','')) }}">{{ state.get('status','—') }}</span>
+  </h1>
+  <p>
+    Trigger: <strong>{{ state.get('trigger','manual') }}</strong>
+    &nbsp;·&nbsp; Started: <strong>{{ fmt_dt(state.get('started_at')) }}</strong>
+    {% if state.get('updated_at') %}
+    &nbsp;·&nbsp; Updated: <strong>{{ fmt_dt(state.get('updated_at')) }}</strong>
+    {% endif %}
+  </p>
+</div>
+
+<!-- Pending approval banner -->
+{% if state.get('status') == 'pending_approval' %}
+<div class="alert alert-warning">
+  <strong>⏸ Approval Required</strong> — This workflow is paused at a human gate
+  (<strong>{{ state.get('current_state','') }}</strong>).
+  <a href="/approve/{{ state.workflow_id }}" class="btn btn-sm btn-primary" style="margin-left:14px; vertical-align:middle">Submit Decision →</a>
+</div>
+{% endif %}
+
+<div class="two-col">
+
+  <!-- Steps -->
+  <div class="card">
+    <div class="card-title">Pipeline Steps</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Step</th><th>Status</th><th>Key Output</th></tr>
+        </thead>
+        <tbody>
+          {% set completed = state.get('completed_steps', []) %}
+          {% set step_status = state.get('step_status', {}) %}
+          {% set step_outputs = state.get('step_outputs', {}) %}
+          {% for step in state.get('steps', []) %}
+          {% set s = step_status.get(step, '') %}
+          {% set s_lower = s.lower() if s else '' %}
+          <tr>
+            <td>
+              <span class="step-name">
+                <span>{{ step_icon(step) }}</span>
+                <span>{{ step }}</span>
+              </span>
+            </td>
+            <td>
+              {% if s %}
+              <span class="badge {{ status_class(s_lower) }}">{{ s }}</span>
+              {% elif step == state.get('last_agent') and state.get('status') == 'running' %}
+              <span class="badge badge-running">running…</span>
+              {% else %}
+              <span class="muted">—</span>
+              {% endif %}
+            </td>
+            <td class="muted mono" style="font-size:11px">
+              {% set out = step_outputs.get(step, {}) %}
+              {% if out.get('status') %}{{ out.status }}{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- State detail -->
+  <div>
+    <div class="card">
+      <div class="card-title">Run Info</div>
+      <table style="font-size:13px">
+        <tbody>
+          <tr><td class="muted" style="padding:6px 0; width:130px">Current state</td>
+              <td class="mono" style="padding:6px 0">{{ state.get('current_state','—') }}</td></tr>
+          <tr><td class="muted" style="padding:6px 0">Trigger</td>
+              <td style="padding:6px 0">{{ state.get('trigger','manual') }}</td></tr>
+          <tr><td class="muted" style="padding:6px 0">Steps selected</td>
+              <td style="padding:6px 0">{{ state.get('steps',[]) | join(', ') }}</td></tr>
+          {% if state.get('mlflow_run_id') %}
+          <tr><td class="muted" style="padding:6px 0">MLflow run</td>
+              <td class="mono" style="padding:6px 0; font-size:11px">{{ state.mlflow_run_id }}</td></tr>
+          {% endif %}
+          {% if state.get('pending_approval_id') %}
+          <tr><td class="muted" style="padding:6px 0">Approval ID</td>
+              <td class="mono" style="padding:6px 0; font-size:11px">{{ state.pending_approval_id }}</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if state.get('status') in ('pending_approval', 'failed') %}
+    <div class="card" style="background:#fffbf0; border-color:#fcd88a">
+      <div class="card-title">Resume Workflow</div>
+      <form method="post" action="/workflows/{{ state.workflow_id }}/resume" style="margin-bottom:12px">
+        <button type="submit" class="btn btn-primary">↩ Resume from here</button>
+        <span class="muted" style="margin-left:10px; font-size:12px">
+          Replays the original config with <code>resume=True</code>
+        </span>
+      </form>
+      <details>
+        <summary style="cursor:pointer; font-size:12px; color:var(--muted)">Or run from CLI</summary>
+        <pre class="cli" style="background:#2a2020; margin-top:8px"><button class="copy-btn">Copy</button>agentic-mlops run-workflow \
+  --workflow-id {{ state.workflow_id }} \
+  --config configs/orchestrator.yaml \
+  --resume</pre>
+      </details>
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+
+<!-- Audit log -->
+<div class="card">
+  <div class="card-title">Audit Log <span class="muted" style="text-transform:none;font-weight:400">(newest first)</span></div>
+  {% if audit_log %}
+  <ul class="timeline">
+    {% for entry in audit_log %}
+    {% set ev = entry.get('event','') %}
+    {% set icon_class = 'ok' if ev in ('step_finished','workflow_finished') else ('err' if 'exception' in ev or 'fail' in ev else 'info') %}
+    <li>
+      <span class="timeline-icon {{ icon_class }}">{{ audit_icon(ev) }}</span>
+      <div class="timeline-body">
+        <div class="timeline-event">{{ ev }}</div>
+        <div class="timeline-meta">
+          {% if entry.get('step') %}<strong>{{ entry.step }}</strong> · {% endif %}
+          {% if entry.get('status') %}status: {{ entry.status }} · {% endif %}
+          {% if entry.get('error') %}<span style="color:var(--red)">{{ entry.error }}</span> · {% endif %}
+          {{ fmt_dt(entry.get('timestamp')) }}
+        </div>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No audit entries yet.</p>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function() {
+    const initialStatus = {{ state.get('status', 'unknown') | tojson }};
+    if (initialStatus !== 'running') return;
+
+    const wfId = {{ state.workflow_id | tojson }};
+    const es = new EventSource('/api/workflows/' + wfId + '/stream');
+
+    es.onmessage = function(event) {
+      const data = JSON.parse(event.data);
+
+      const topBadge = document.querySelector('.page-header .badge');
+      if (topBadge) {
+        topBadge.textContent = data.status;
+        topBadge.className = 'badge badge-' + data.status.replace(/_/g, '-');
+      }
+
+      if (data.status !== 'running') {
+        es.close();
+        window.location.reload();
+      }
+    };
+
+    es.onerror = function() {
+      es.close();
+      // Fallback: reload after 5 s to show latest state
+      setTimeout(function() { window.location.reload(); }, 5000);
+    };
+  })();
+</script>
+{% endblock %}

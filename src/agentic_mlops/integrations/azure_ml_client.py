@@ -90,14 +90,35 @@ class FakeJobsOperations:
     def get(self, name: str) -> _FakeJob:
         return _FakeJob(name=name, status=self._status)
 
-    def download(self, name: str, output_name: str, download_path: str) -> None:
+    def download(
+        self,
+        name: str,
+        output_name: str = "",
+        download_path: str = "",
+        all_outputs: bool = False,
+    ) -> None:
         self.downloaded.append((name, output_name, download_path))
-        # Create the expected artifact files so runner code can find them
-        out_dir = Path(download_path) / output_name
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "best.pt").write_bytes(b"fake-best-pt")
-        (out_dir / "last.pt").write_bytes(b"fake-last-pt")
-        (out_dir / "results.csv").write_text("epoch,train/loss\n1,0.5\n", encoding="utf-8")
+        if all_outputs:
+            # Pipeline job: create both step output dirs
+            train_dir = Path(download_path) / "train_step" / "model_output"
+            train_dir.mkdir(parents=True, exist_ok=True)
+            (train_dir / "best.pt").write_bytes(b"fake-best-pt")
+            (train_dir / "last.pt").write_bytes(b"fake-last-pt")
+            (train_dir / "results.csv").write_text("epoch,train/loss\n1,0.5\n", encoding="utf-8")
+            eval_dir = Path(download_path) / "eval_step" / "eval_output"
+            eval_dir.mkdir(parents=True, exist_ok=True)
+            (eval_dir / "metrics.json").write_text(
+                '{"map50":0.862,"map50_95":0.591,"precision":0.84,"recall":0.79,'
+                '"per_class_metrics":{}}',
+                encoding="utf-8",
+            )
+        else:
+            # Single CommandJob: create the expected artifact files so runner code can find them
+            out_dir = Path(download_path) / output_name
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "best.pt").write_bytes(b"fake-best-pt")
+            (out_dir / "last.pt").write_bytes(b"fake-last-pt")
+            (out_dir / "results.csv").write_text("epoch,train/loss\n1,0.5\n", encoding="utf-8")
 
     def cancel(self, name: str) -> None:
         self.cancelled.append(name)
@@ -213,6 +234,25 @@ class FakeOnlineDeploymentsOperations:
         return _FakePoller(fake)
 
 
+class _FakeDatastore:
+    """Minimal stub returned by FakeDatastoresOperations.get()."""
+
+    def __init__(self) -> None:
+        self.account_name = "fakeaccount"
+        self.container_name = "fake-container"
+
+
+class FakeDatastoresOperations:
+    """Fake azure.ai.ml MLClient.datastores for unit tests."""
+
+    def __init__(self) -> None:
+        self.fetched: list[str] = []
+
+    def get(self, name: str) -> _FakeDatastore:
+        self.fetched.append(name)
+        return _FakeDatastore()
+
+
 class FakeMLClient:
     """Minimal MLClient stub for unit tests."""
 
@@ -222,6 +262,7 @@ class FakeMLClient:
         self.data = FakeDataOperations()
         self.online_endpoints = FakeOnlineEndpointsOperations()
         self.online_deployments = FakeOnlineDeploymentsOperations()
+        self.datastores = FakeDatastoresOperations()
 
 
 class FakeAzureMLClientFactory:

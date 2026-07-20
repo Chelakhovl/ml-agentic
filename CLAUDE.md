@@ -10,8 +10,9 @@ pip install -e ".[dev]"
 
 # Install with optional extras
 pip install -e ".[dev,mlflow]"   # adds LocalMLflowTrackingClient
-pip install -e ".[dev,azure]"    # adds AzureMLTrainingRunner
+pip install -e ".[dev,azure]"    # adds AzureMLTrainingRunner + AzureBlobArtifactStore + ApplicationInsightsLogClient
 pip install -e ".[dev,vision]"   # adds Pillow-based corruption checks to DataIntakeAgent
+pip install -e ".[dev,web]"      # adds web dashboard (FastAPI + uvicorn)
 
 # Run all unit tests
 pytest tests/unit -v
@@ -160,6 +161,10 @@ agentic-mlops run-workflow \
 agentic-mlops run-workflow \
   --workflow-id wf_001 --config configs/orchestrator.yaml --runs-dir runs \
   --enable-mlflow --mlflow-config configs/mlflow.example.yaml
+
+# CLI: start the web dashboard (requires the 'web' extra)
+agentic-mlops serve --port 8000 --runs-dir runs \
+  --registry-dir outputs/model_registry --dataset-registry-dir outputs/dataset_registry
 ```
 
 Copy `configs/training.example.yaml`, `configs/promotion_policy.example.yaml`,
@@ -186,10 +191,11 @@ This is a **sequential multi-agent MLOps pipeline** for YOLO object detection. A
 - `contracts/` — Pydantic v2 I/O models; `ToolResult` is the shared output base (carries `success`, `message`, `artifacts`, `warnings`, `errors`, `metadata`); `WorkflowState` StrEnum (14 states) lives in `contracts/common.py`
 - `tools/` — `DatasetValidator`, `YoloTrainer`, `YoloEvaluator`, `ReportWriter`, `TrainingRunner` (local + `AzureMLTrainingRunner`), `EvaluationRunner` (local + `AzureMLEvaluationRunner`) — pure deterministic execution
 - `workflows/` — `MVPWorkflow` chains the original five MVP agents and stops on first failure via factory injection (see below); `OrchestratorWorkflow` (see "Orchestrator" section below) is the newer, more general superset — a configurable subset of all 10 forward-pipeline steps, with persistent state/audit and resume; `PromotionPolicy` enforces mAP/precision/recall thresholds loaded from YAML; `run-mvp --training-runner azure-ml --evaluation-runner azure-ml --registry-backend azure_ml --azure-config configs/azure_ml.yaml` runs the whole 5-step pipeline on Azure ML (one shared `AzureMLConfig` resolved once at the top of `MVPWorkflow.run()`, fails fast with a clear error if `azure_config_path` is missing for a step that needs it — before any step, including validation, executes)
-- `integrations/` — MLflow tracking hierarchy (see below) + model registry clients (Local/MLflow/Azure ML, see below); `azure_ml_client.py` only holds the SDK v2 `MLClient` factories (`DefaultAzureMLClientFactory` / `FakeAzureMLClientFactory`) — real Azure ML training/evaluation go through `tools/training_runner.py::AzureMLTrainingRunner` / `tools/evaluation_runner.py::AzureMLEvaluationRunner`, always injected by the CLI. `YoloTrainer`/`YoloEvaluator` raise a clear `RuntimeError` for `azure_train`/`azure_eval` mode if no runner was injected — there is no legacy fallback path anymore (removed 2026-07-10; it used to raise `NotImplementedError` via a now-deleted `AzureMLTrainingClient` stub)
+- `integrations/` — MLflow tracking hierarchy (see below) + model registry clients (Local/MLflow/Azure ML, see below) + `artifact_store.py` (`NoOpArtifactStore`/`AzureBlobArtifactStore`/`FakeArtifactStore` — additive blob mirror of local artifacts) + `appinsights_log_client.py` (`LocalFileLogClient`/`ApplicationInsightsLogClient`/`FakeInferenceLogClient`) + `notification_client.py` (`NoOpNotificationClient`/`WebhookNotificationClient`/`FakeNotificationClient`); `azure_ml_client.py` only holds the SDK v2 `MLClient` factories (`DefaultAzureMLClientFactory` / `FakeAzureMLClientFactory`) — real Azure ML training/evaluation go through `tools/training_runner.py::AzureMLTrainingRunner` / `tools/evaluation_runner.py::AzureMLEvaluationRunner`, always injected by the CLI. `YoloTrainer`/`YoloEvaluator` raise a clear `RuntimeError` for `azure_train`/`azure_eval` mode if no runner was injected — there is no legacy fallback path anymore (removed 2026-07-10; it used to raise `NotImplementedError` via a now-deleted `AzureMLTrainingClient` stub)
 - `azure_jobs/` — entry scripts submitted to Azure ML as command jobs: `train_yolo.py` (training), `eval_yolo.py` (evaluation, writes `metrics.json` + plots). Both are self-contained (no `agentic_mlops` package import) since only this directory is uploaded as the job's code snapshot
 - `observability/` — JSON-line structured logging via `configure_logging()`; use `--json-logs` CLI flag; all modules use `get_logger(__name__)` with `extra=` for structured fields
-- `cli/main.py` — Typer app with sixteen commands: `data-intake`, `structure-dataset`, `pseudo-label`, `validate-dataset`, `label-qa`, `version-dataset`, `model-decision`, `deploy-model`, `monitor`, `approve-training`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`, `run-workflow`
+- `cli/main.py` — Typer app with seventeen commands: `data-intake`, `structure-dataset`, `pseudo-label`, `validate-dataset`, `label-qa`, `version-dataset`, `model-decision`, `deploy-model`, `monitor`, `approve-training`, `train`, `evaluate`, `approve`, `register-model`, `run-mvp`, `run-workflow`, `serve`
+- `web/` — FastAPI web dashboard (`app.py`, `routes.py`, `reader.py`, templates); reads `runs/`, `outputs/model_registry/`, `outputs/dataset_registry/` from disk; requires `[web]` extra
 
 ### Training and evaluation runners
 
@@ -200,6 +206,7 @@ Both `train` and `evaluate` CLI commands support the same three runners; `azure-
 | `--runner fake` (default in dry-run) | Writes `training_request.json`; no YOLO call | Deterministic fake metrics (mAP50=0.862); no YOLO call |
 | `--runner local-yolo` | Calls Ultralytics locally (requires `ultralytics` installed) | Real Ultralytics `.val()` locally |
 | `--runner azure-ml` | Submits a CommandJob running `azure_jobs/train_yolo.py`; downloads `best.pt`/`last.pt`/`results.csv` | Submits a CommandJob running `azure_jobs/eval_yolo.py`; downloads `metrics.json` + confusion-matrix/PR-curve plots |
+| `--training-runner azure-ml-pipeline` (`run-mvp`/`run-workflow` only) | Submits a 2-step PipelineJob (`tools/pipeline_runner.py::AzureMLPipelineRunner`); eval step receives `best.pt` directly from pipeline data-flow — no intermediate download/re-upload between train and eval | Combined with training in the same PipelineJob; downloads both outputs after completion |
 
 ### Dual evaluation policy system
 
@@ -239,9 +246,7 @@ Three registry backends, all fully implemented in `integrations/model_registry.p
 `DataIntakeAgent`/`DataIntakeScanner` (`agents/data_intake.py`, `tools/data_intake_scanner.py`,
 `contracts/data_intake.py`) — the second of the 8 previously-unimplemented agents; precedes
 `DatasetValidationAgent` in the full architecture (`New Data → Data Intake → Dataset
-Structuring → Dataset Validation → ...`). Scans a **local** raw image directory (no Azure
-Blob/ADLS client exists in this codebase — `raw_data_path` is local, same as
-`DatasetValidator.dataset_path`). Checks: file extension against `expected_formats`,
+Structuring → Dataset Validation → ...`). Scans a **local** raw image directory (`raw_data_path` is local — `AzureBlobArtifactStore` can mirror artifacts to blob, but `DataIntakeAgent` itself does not pull from blob). Checks: file extension against `expected_formats`,
 corruption (Pillow-based when installed via the new `vision` extra — soft dependency,
 `pillow_available` reported in the manifest; falls back to a non-zero-size sanity check
 otherwise), SHA-256 duplicate detection. Status: `passed` / `needs_human_source_approval` (`success=True` — soft gate: missing
@@ -427,12 +432,12 @@ gate), matching every other "no auto-promote" rule in this codebase. CLI:
 
 `MonitoringAgent`/`ModelMonitor` (`agents/monitoring.py`, `tools/monitor.py`,
 `contracts/monitoring.py`) — the eighth and final of the 8 previously-unimplemented
-agents. **No Azure Monitor / Application Insights integration exists in this codebase**
-— same "standalone, no real infra" pattern as `DeploymentAgent` having no real serving
-infra. Monitoring here means reading a local JSON-Lines predictions log — the shape a
-real serving stack would eventually export from Azure Monitor/App Insights — one
-inference record per line: `{"timestamp": ..., "image_id": ..., "latency_ms": ...,
-"error": bool, "detections": [{"class": ..., "confidence": ...}, ...]}`.
+agents. Log ingestion is abstracted behind `InferenceLogClient` (`integrations/appinsights_log_client.py`):
+- `LocalFileLogClient` (default) — reads a local JSON-Lines predictions log (same behaviour as before)
+- `ApplicationInsightsLogClient` — queries the App Insights `traces` table via `azure-monitor-query` (requires `[azure]` extra); records must be emitted by `azure_jobs/score.py` with `message="inference_record"` + `customDimensions`; accepts `workspace_id` (App Insights Application ID), `endpoint_name`, `window_seconds`
+- `FakeInferenceLogClient` — in-memory test double
+
+The expected per-record shape (both backends): `{"timestamp": ..., "image_id": ..., "latency_ms": ..., "error": bool, "detections": [{"class": ..., "confidence": ...}, ...]}`.
 
 **Window filtering**: `monitoring_window` (e.g. `"24h"`, `"7d"`) ends at the *latest
 timestamp in the log*, not wall-clock now — keeps results deterministic for a fixed log
@@ -567,8 +572,7 @@ continues the same story" semantics `--resume` already has for everything else.
 Disabled by default; enable with `--enable-mlflow --mlflow-config
 configs/mlflow.example.yaml`.
 
-**Not implemented**: a real Notification client (Teams/Slack/Email — state
-transitions are only visible via `audit_log.jsonl` and structured logs).
+**Webhook notifications**: `OrchestratorWorkflow` accepts a `notification_client` (`integrations/notification_client.py`). Three implementations: `NoOpNotificationClient` (default), `WebhookNotificationClient` (stdlib-only `urllib.request`; POSTs Teams MessageCard or Slack attachment payloads), `FakeNotificationClient` (test double). Configure via `OrchestratorInput.notifications` (`contracts/notification.py::NotificationConfig` — `teams_webhook_url`, `slack_webhook_url`, `notify_on` list). Never raises on webhook failure — always swallows and logs a warning.
 
 CLI: `agentic-mlops run-workflow --workflow-id <id> --config
 configs/orchestrator.yaml [--runs-dir runs] [--resume] [--enable-mlflow
@@ -604,19 +608,18 @@ one level up.
 
 ### What is not yet implemented
 
-As of 2026-07-10, all 5 MVP agents are fully implemented and tested, including every
-runner variant: `fake`/`local-yolo`/`azure-ml` for training and evaluation, and
+As of 2026-07-20, all 5 MVP agents are fully implemented and tested, including every
+runner variant: `fake`/`local-yolo`/`azure-ml`/`azure-ml-pipeline` for training and evaluation, and
 `local`/`mlflow`/`azure_ml` for model registry (see
 `agentic_mlops_workflow_docs/docs/13_backlog.md` for the authoritative, actively-maintained
 status of every planned item). Still missing:
 
-- Azure ML pipeline components (multi-step AML pipeline instead of a single CommandJob per step)
-- Storing artifacts in Azure Blob/ADLS instead of local disk (registering the dataset *itself* as an Azure ML Data Asset is now implemented — see `DatasetVersioningAgent` above — but the underlying files still live on local disk either way, uploaded to Azure only as part of that registration call)
 - VOC label format for Dataset Structuring (`LabelFormat` only has `yolo`/`coco`)
 - Docker image build, AKS, and a CI/CD trigger for `DeploymentAgent` — Azure ML Managed Online Endpoint (real serving) is implemented (see above); these three remain out of scope, not started
-- Azure Monitor / Application Insights integration for `MonitoringAgent` — log ingestion is a local JSONL file only, not live endpoint metrics/traces; hard samples are surfaced in a manifest for manual triage, not automatically fed back into Data Intake
+- Hard samples from `MonitoringAgent` are surfaced in a manifest for manual triage but not automatically fed back into Data Intake
 - All 8 originally-unimplemented agents (`LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, `AnnotationAgent`, `DatasetVersioningAgent`, `ModelDecisionAgent`, `DeploymentAgent`, `MonitoringAgent`) **and** the top-level Orchestrator Agent (`OrchestratorWorkflow`, see "Orchestrator" above) are now implemented — every spec in `agentic_mlops_workflow_docs/agents/` has a corresponding implementation.
-- Real Notification client (Teams/Slack/Email) for the Orchestrator — state transitions are only visible via `audit_log.jsonl` and structured logs, not pushed anywhere
+
+Previously listed as missing but now implemented: `AzureMLPipelineRunner` (combined train+eval PipelineJob), `AzureBlobArtifactStore` (artifact mirroring to blob), `ApplicationInsightsLogClient` (App Insights log ingestion for monitoring), `WebhookNotificationClient` (Teams/Slack notifications for Orchestrator), web dashboard (`agentic-mlops serve`).
 
 Note: `agentic_mlops_workflow_docs/docs/` and `agentic_mlops_workflow_docs/agents/` are
 design specs frozen at the project-bootstrap stage — they describe the full target

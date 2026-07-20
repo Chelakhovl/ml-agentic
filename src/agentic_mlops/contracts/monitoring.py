@@ -1,16 +1,15 @@
 """Pydantic contracts for the Monitoring Agent.
 
-No real Azure Monitor / Application Insights / hard-sample-mining infra exists
-in this codebase (same "standalone, no real infra" pattern as DeploymentAgent
-has no real serving infra). "Monitoring" here means reading a local JSON-Lines
-predictions log — the kind of artifact a real serving stack would eventually
-export from Azure Monitor/App Insights — and computing drift/latency/
-confidence signals from it deterministically.
+Two log sources are supported:
+  "local"         — reads a local JSON-Lines predictions log (original behaviour)
+  "azure_monitor" — queries the Application Insights traces table via
+                    ApplicationInsightsLogClient (azure-monitor-query SDK)
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -45,10 +44,16 @@ class MonitoringInput(BaseModel):
     endpoint_name: str
     model_version: str = ""
 
-    # JSON-Lines file, one inference record per line:
+    # Which source to read inference records from.
+    source: Literal["local", "azure_monitor"] = "local"
+
+    # Required when source="local": path to a JSON-Lines predictions log.
     #   {"timestamp": "...", "image_id": "...", "latency_ms": 42.0, "error": false,
     #    "detections": [{"class": "scratch", "confidence": 0.91}, ...]}
-    predictions_log_path: str
+    predictions_log_path: str = ""
+
+    # Required when source="azure_monitor": App Insights Application ID (GUID).
+    app_insights_workspace_id: str | None = None
 
     # e.g. "24h", "7d", "30m" — window ends at the latest timestamp in the log
     # (not wall-clock now), so results stay deterministic for a fixed log file.

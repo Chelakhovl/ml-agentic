@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Compare Models — Registry{% endblock %}
+
+{% block scripts %}
+{% if model_a and model_b %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script>
+(function() {
+  const linA = {{ model_a.lineage | tojson }};
+  const linB = {{ model_b.lineage | tojson }};
+  const keys = ['map50', 'map50_95', 'precision', 'recall'];
+  const labels = ['mAP50', 'mAP50-95', 'Precision', 'Recall'];
+  const get = (lin, k) => lin && lin[k] != null ? +lin[k].toFixed(3) : 0;
+
+  new Chart(document.getElementById('radarChart'), {
+    type: 'radar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: '{{ model_a._name }}:v{{ model_a.version }}',
+          data: keys.map(k => get(linA, k)),
+          backgroundColor: 'rgba(0,113,227,.15)',
+          borderColor: '#0071e3',
+          pointBackgroundColor: '#0071e3',
+        },
+        {
+          label: '{{ model_b._name }}:v{{ model_b.version }}',
+          data: keys.map(k => get(linB, k)),
+          backgroundColor: 'rgba(52,199,89,.15)',
+          borderColor: '#34c759',
+          pointBackgroundColor: '#34c759',
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      scales: { r: { min: 0, max: 1, ticks: { stepSize: 0.2 } } },
+      plugins: { legend: { position: 'bottom' } }
+    }
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Model Comparison</h1>
+  <p><a href="/registry" class="table-link">← Registry</a></p>
+</div>
+
+<!-- Selection form -->
+<div class="card">
+  <div class="card-title">Select models to compare</div>
+  <form method="get" action="/registry/compare" style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end">
+    <div class="form-group" style="flex:1; min-width:220px; margin-bottom:0">
+      <label>Model A <span class="hint">(baseline)</span></label>
+      <select name="a" onchange="this.form.submit()">
+        <option value="">— select —</option>
+        {% for model_name, vers in all_versions.items() %}
+        {% for v in vers %}
+        {% set ref = model_name + ':' + v.version | string %}
+        <option value="{{ ref }}" {{ 'selected' if ref_a == ref else '' }}>
+          {{ model_name }} v{{ v.version }}
+          {%- if v.lineage.get('map50') %} (mAP50={{ "%.3f" | format(v.lineage.map50) }}){% endif %}
+        </option>
+        {% endfor %}
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group" style="flex:1; min-width:220px; margin-bottom:0">
+      <label>Model B <span class="hint">(candidate)</span></label>
+      <select name="b" onchange="this.form.submit()">
+        <option value="">— select —</option>
+        {% for model_name, vers in all_versions.items() %}
+        {% for v in vers %}
+        {% set ref = model_name + ':' + v.version | string %}
+        <option value="{{ ref }}" {{ 'selected' if ref_b == ref else '' }}>
+          {{ model_name }} v{{ v.version }}
+          {%- if v.lineage.get('map50') %} (mAP50={{ "%.3f" | format(v.lineage.map50) }}){% endif %}
+        </option>
+        {% endfor %}
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary" style="margin-bottom:0">Compare →</button>
+  </form>
+</div>
+
+{% if model_a and model_b %}
+
+<div class="two-col">
+
+  <!-- Metric delta table -->
+  <div class="card">
+    <div class="card-title">Metric Comparison</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>
+              <span style="color:#0071e3">A</span>
+              {{ model_a._name }}:v{{ model_a.version }}
+            </th>
+            <th>
+              <span style="color:#34c759">B</span>
+              {{ model_b._name }}:v{{ model_b.version }}
+            </th>
+            <th>Δ B − A</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% set metric_labels = {'map50': 'mAP50', 'map50_95': 'mAP50-95', 'precision': 'Precision', 'recall': 'Recall'} %}
+          {% for d in deltas %}
+          <tr>
+            <td><strong>{{ metric_labels.get(d.metric, d.metric) }}</strong></td>
+            <td class="mono">{{ "%.4f" | format(d.a) if d.a is not none else "—" }}</td>
+            <td class="mono">{{ "%.4f" | format(d.b) if d.b is not none else "—" }}</td>
+            <td>
+              {% if d.delta is not none %}
+              {% set delta_abs = d.delta if d.delta >= 0 else -d.delta %}
+              <span style="font-weight:700; color:{{ 'var(--green)' if d.delta > 0.001 else ('var(--red)' if d.delta < -0.001 else 'var(--muted)') }}">
+                {{ '+' if d.delta >= 0 else '' }}{{ "%.4f" | format(d.delta) }}
+                {{ '↑' if d.delta > 0.001 else ('↓' if d.delta < -0.001 else '—') }}
+              </span>
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% set lin_a = model_a.lineage %}
+    {% set lin_b = model_b.lineage %}
+    <hr class="divider">
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px 24px; font-size:12.5px">
+      <span class="muted">Approved by A</span><span class="mono" style="font-size:12px">{{ lin_a.get('approved_by','—') }}</span>
+      <span class="muted">Approved by B</span><span class="mono" style="font-size:12px">{{ lin_b.get('approved_by','—') }}</span>
+      <span class="muted">Training runner A</span><span>{{ lin_a.get('training_runner','—') }}</span>
+      <span class="muted">Training runner B</span><span>{{ lin_b.get('training_runner','—') }}</span>
+    </div>
+  </div>
+
+  <!-- Radar chart -->
+  <div class="card" style="display:flex; flex-direction:column; justify-content:center">
+    <div class="card-title">Radar Chart</div>
+    <canvas id="radarChart" style="max-height:320px"></canvas>
+  </div>
+
+</div>
+
+{% elif ref_a or ref_b %}
+<div class="alert alert-error">
+  Could not resolve one or both model references.
+  Check that the model name and version exist in the registry.
+</div>
+{% endif %}
+{% endblock %}

@@ -65,6 +65,35 @@ class AzureMLServingConfig(BaseModel):
     environment: AzureMLEnvironmentConfig | None = None
 
 
+class AzureMLPipelineConfig(BaseModel):
+    """Config for the 2-step train+eval PipelineJob."""
+
+    timeout_minutes: int = Field(default=240, gt=0)
+    stream_logs: bool = True
+    download_outputs: bool = True
+    train_output_name: str = "model_output"
+    eval_output_name: str = "eval_output"
+
+
+class AzureMLStorageConfig(BaseModel):
+    """Optional Blob Storage artifact sync.
+
+    When enabled=True, workflows upload their per-step artifacts to this Azure Blob
+    container after each step completes.  Local artifacts are kept intact — blob is
+    an additive layer.
+
+    Auto-resolve mode (default): ``ml_client.datastores.get(datastore_name)`` resolves
+    the account name and container from the workspace.  Explicit mode: set ``account_url``
+    and optionally ``container_name`` to bypass the MLClient lookup entirely.
+    """
+
+    enabled: bool = False
+    datastore_name: str = "workspaceblobstore"
+    artifact_prefix: str = "agentic-mlops"
+    account_url: str | None = None
+    container_name: str | None = None
+
+
 class AzureMLConfig(BaseModel):
     subscription_id: str
     resource_group: str
@@ -76,6 +105,8 @@ class AzureMLConfig(BaseModel):
     job: AzureMLJobConfig = Field(default_factory=AzureMLJobConfig)
     data: AzureMLDataConfig = Field(default_factory=AzureMLDataConfig)
     serving: AzureMLServingConfig = Field(default_factory=AzureMLServingConfig)
+    pipeline: AzureMLPipelineConfig = Field(default_factory=AzureMLPipelineConfig)
+    storage: AzureMLStorageConfig = Field(default_factory=AzureMLStorageConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> AzureMLConfig:

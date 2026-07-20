@@ -18,13 +18,18 @@ from agentic_mlops.contracts.datasets import DatasetValidationInput
 from agentic_mlops.contracts.evaluation import EvaluationInput, EvaluationMode
 from agentic_mlops.contracts.mlflow_config import MLflowConfig
 from agentic_mlops.contracts.model_registry import ModelRegistrationInput, RegistryBackend
-from agentic_mlops.contracts.training import TrainingConfig, TrainingInput, TrainingMode
+from agentic_mlops.contracts.training import (
+    TrainingConfig,
+    TrainingInput,
+    TrainingMode,
+)
 from agentic_mlops.contracts.workflows import (
     MVPWorkflowInput,
     MVPWorkflowOutput,
     MVPWorkflowStatus,
     MVPWorkflowStepResult,
 )
+from agentic_mlops.integrations.artifact_store import ArtifactStore, NoOpArtifactStore
 from agentic_mlops.integrations.mlflow_client import MLflowTrackingClientBase
 from agentic_mlops.integrations.model_registry import (
     AzureMLModelRegistryClient,
@@ -32,6 +37,7 @@ from agentic_mlops.integrations.model_registry import (
 )
 from agentic_mlops.observability.logging import get_logger
 from agentic_mlops.tools.evaluation_runner import AzureMLEvaluationRunner
+from agentic_mlops.tools.pipeline_runner import AzureMLPipelineRunner
 from agentic_mlops.tools.report_writer import ReportWriter
 from agentic_mlops.tools.training_runner import AzureMLTrainingRunner
 
@@ -54,6 +60,7 @@ class MVPWorkflow:
         _evaluation_factory: Callable[[Path], Any] | None = None,
         _approval_factory: Callable[[Path], Any] | None = None,
         _registry_factory: Callable[[Path], Any] | None = None,
+        artifact_store: ArtifactStore | None = None,
     ) -> None:
         self.logger = get_logger(self.__class__.__name__)
         # None = use default factory with MLflow injection; non-None = test override
@@ -65,6 +72,7 @@ class MVPWorkflow:
         self._mlflow = mlflow_client
         self._mlflow_config = mlflow_config
         self._report_writer = ReportWriter()
+        self._artifact_store: ArtifactStore = artifact_store or NoOpArtifactStore()
 
     def run(self, inp: MVPWorkflowInput) -> MVPWorkflowOutput:
         output_dir = Path(inp.output_dir)
@@ -73,6 +81,7 @@ class MVPWorkflow:
 
         # ── Resolve Azure ML runners/client up front (fail fast, before any step) ──
         try:
+            azure_pipeline_runner = self._maybe_azure_pipeline_runner(inp)
             azure_train_runner = self._maybe_azure_train_runner(inp)
             azure_eval_runner = self._maybe_azure_eval_runner(inp)
             azure_registry_client = self._maybe_azure_registry_client(inp)
@@ -141,84 +150,140 @@ class MVPWorkflow:
                 output_dir, steps, all_artifacts, "validation", exc, mlflow_run_id
             )
 
-        # ── Step 2: Training ──────────────────────────────────────────────────
+        # ── Step 2: Training  /  Step 3: Evaluation ──────────────────────────
+        # Pipeline mode runs both steps as a single Azure ML PipelineJob.
         train_dir = output_dir / "training"
-        try:
-            cfg = TrainingConfig.from_yaml(inp.training_config_path)
-            if inp.training_runner == "local-yolo":
-                cfg.mode = TrainingMode.LOCAL_TRAIN
-            elif inp.training_runner == "azure-ml":
-                cfg.mode = TrainingMode.AZURE_TRAIN
-            elif inp.dry_run:
-                cfg.mode = TrainingMode.LOCAL_DRY_RUN
-            train_agent = train_factory(train_dir)
-            train_result = train_agent.run(
-                TrainingInput(
+        eval_dir = output_dir / "evaluation"
+
+        if azure_pipeline_runner is not None:
+            try:
+                cfg = TrainingConfig.from_yaml(inp.training_config_path)
+                cfg.mode = TrainingMode.AZURE_PIPELINE
+                training_inp = TrainingInput(
                     dataset_path=inp.dataset_path,
                     data_yaml_path=inp.data_yaml_path,
                     training_config=cfg,
                     dataset_validation_status=val_result.status,
                 )
-            )
-            step = MVPWorkflowStepResult(
-                step="training",
-                status="completed" if train_result.success else "failed",
-                success=train_result.success,
-                errors=train_result.errors,
-                artifacts=train_result.artifacts,
-            )
-            steps.append(step)
-            all_artifacts.extend(train_result.artifacts)
-            if not train_result.success:
-                return self._fail(
-                    output_dir, steps, all_artifacts, "Training failed.", mlflow_run_id
-                )
-        except Exception as exc:
-            return self._exception_fail(
-                output_dir, steps, all_artifacts, "training", exc, mlflow_run_id
-            )
-
-        # ── Step 3: Evaluation ────────────────────────────────────────────────
-        eval_dir = output_dir / "evaluation"
-        try:
-            weights_path = train_result.best_weights_path or "dry_run"
-            if inp.evaluation_runner == "local-yolo":
-                mode = EvaluationMode.LOCAL_EVAL
-            elif inp.evaluation_runner == "azure-ml":
-                mode = EvaluationMode.AZURE_EVAL
-            elif inp.dry_run:
-                mode = EvaluationMode.LOCAL_DRY_RUN
-            else:
-                mode = EvaluationMode.LOCAL_EVAL
-            eval_agent = eval_factory(eval_dir)
-            eval_result = eval_agent.run(
-                EvaluationInput(
+                evaluation_inp = EvaluationInput(
                     dataset_path=inp.dataset_path,
                     data_yaml_path=inp.data_yaml_path,
-                    weights_path=weights_path,
-                    mode=mode,
-                    training_status=str(train_result.job_status),
+                    weights_path="pipeline",
+                    mode=EvaluationMode.AZURE_PIPELINE_EVAL,
+                    training_status=None,
                     promotion_policy_path=inp.evaluation_config_path,
                     evaluation_config_path=inp.evaluation_config_path,
                 )
-            )
-            step = MVPWorkflowStepResult(
-                step="evaluation",
-                status="completed" if eval_result.success else "failed",
-                success=eval_result.success,
-                errors=eval_result.errors,
-                artifacts=eval_result.artifacts,
-            )
-            steps.append(step)
-            all_artifacts.extend(eval_result.artifacts)
+                train_result, eval_result = azure_pipeline_runner.run(
+                    training_inp, evaluation_inp, train_dir, eval_dir
+                )
+            except Exception as exc:
+                return self._exception_fail(
+                    output_dir, steps, all_artifacts, "pipeline", exc, mlflow_run_id
+                )
+
+            for step_name, result in (("training", train_result), ("evaluation", eval_result)):
+                step = MVPWorkflowStepResult(
+                    step=step_name,
+                    status="completed" if result.success else "failed",
+                    success=result.success,
+                    errors=result.errors,
+                    artifacts=result.artifacts,
+                )
+                steps.append(step)
+                all_artifacts.extend(result.artifacts)
+
+            self._artifact_store.upload_directory(train_dir, "training")
+            self._artifact_store.upload_directory(eval_dir, "evaluation")
+            if not train_result.success:
+                return self._fail(
+                    output_dir, steps, all_artifacts, "Pipeline training step failed.",
+                    mlflow_run_id,
+                )
             if not eval_result.success:
                 return self._fail(
-                    output_dir, steps, all_artifacts, "Evaluation failed.", mlflow_run_id
+                    output_dir, steps, all_artifacts, "Pipeline evaluation step failed.",
+                    mlflow_run_id,
                 )
-        except Exception as exc:
-            return self._exception_fail(
-                output_dir, steps, all_artifacts, "evaluation", exc, mlflow_run_id
-            )
+        else:
+            # ── Step 2: Training (single CommandJob) ──────────────────────────
+            try:
+                cfg = TrainingConfig.from_yaml(inp.training_config_path)
+                if inp.training_runner == "local-yolo":
+                    cfg.mode = TrainingMode.LOCAL_TRAIN
+                elif inp.training_runner == "azure-ml":
+                    cfg.mode = TrainingMode.AZURE_TRAIN
+                elif inp.dry_run:
+                    cfg.mode = TrainingMode.LOCAL_DRY_RUN
+                train_agent = train_factory(train_dir)
+                train_result = train_agent.run(
+                    TrainingInput(
+                        dataset_path=inp.dataset_path,
+                        data_yaml_path=inp.data_yaml_path,
+                        training_config=cfg,
+                        dataset_validation_status=val_result.status,
+                    )
+                )
+                step = MVPWorkflowStepResult(
+                    step="training",
+                    status="completed" if train_result.success else "failed",
+                    success=train_result.success,
+                    errors=train_result.errors,
+                    artifacts=train_result.artifacts,
+                )
+                steps.append(step)
+                all_artifacts.extend(train_result.artifacts)
+                self._artifact_store.upload_directory(train_dir, "training")
+                if not train_result.success:
+                    return self._fail(
+                        output_dir, steps, all_artifacts, "Training failed.", mlflow_run_id
+                    )
+            except Exception as exc:
+                return self._exception_fail(
+                    output_dir, steps, all_artifacts, "training", exc, mlflow_run_id
+                )
+
+            # ── Step 3: Evaluation (single CommandJob) ────────────────────────
+            try:
+                weights_path = train_result.best_weights_path or "dry_run"
+                if inp.evaluation_runner == "local-yolo":
+                    mode = EvaluationMode.LOCAL_EVAL
+                elif inp.evaluation_runner == "azure-ml":
+                    mode = EvaluationMode.AZURE_EVAL
+                elif inp.dry_run:
+                    mode = EvaluationMode.LOCAL_DRY_RUN
+                else:
+                    mode = EvaluationMode.LOCAL_EVAL
+                eval_agent = eval_factory(eval_dir)
+                eval_result = eval_agent.run(
+                    EvaluationInput(
+                        dataset_path=inp.dataset_path,
+                        data_yaml_path=inp.data_yaml_path,
+                        weights_path=weights_path,
+                        mode=mode,
+                        training_status=str(train_result.job_status),
+                        promotion_policy_path=inp.evaluation_config_path,
+                        evaluation_config_path=inp.evaluation_config_path,
+                    )
+                )
+                step = MVPWorkflowStepResult(
+                    step="evaluation",
+                    status="completed" if eval_result.success else "failed",
+                    success=eval_result.success,
+                    errors=eval_result.errors,
+                    artifacts=eval_result.artifacts,
+                )
+                steps.append(step)
+                all_artifacts.extend(eval_result.artifacts)
+                self._artifact_store.upload_directory(eval_dir, "evaluation")
+                if not eval_result.success:
+                    return self._fail(
+                        output_dir, steps, all_artifacts, "Evaluation failed.", mlflow_run_id
+                    )
+            except Exception as exc:
+                return self._exception_fail(
+                    output_dir, steps, all_artifacts, "evaluation", exc, mlflow_run_id
+                )
 
         # ── Step 4: Human Approval ────────────────────────────────────────────
         approval_dir = output_dir / "approval"
@@ -365,6 +430,17 @@ class MVPWorkflow:
     # ── Azure ML resolution ─────────────────────────────────────────────────────
     # Training/evaluation/registry each reuse the same azure_config_path; resolved
     # up front in run() so a missing/invalid config fails before any step executes.
+
+    def _maybe_azure_pipeline_runner(
+        self, inp: MVPWorkflowInput
+    ) -> AzureMLPipelineRunner | None:
+        if inp.training_runner != "azure-ml-pipeline":
+            return None
+        if not inp.azure_config_path:
+            raise ValueError(
+                "azure_config_path is required when training_runner='azure-ml-pipeline'."
+            )
+        return AzureMLPipelineRunner(AzureMLConfig.from_yaml(inp.azure_config_path))
 
     def _maybe_azure_train_runner(self, inp: MVPWorkflowInput) -> AzureMLTrainingRunner | None:
         if inp.training_runner != "azure-ml":

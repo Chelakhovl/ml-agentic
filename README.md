@@ -70,14 +70,15 @@ pytest tests/unit -v
 src/agentic_mlops/
   agents/           ← orchestration layer (5 MVP agents + data-intake, structure-dataset, pseudo-label, label-qa, dataset-versioning, model-decision, deployment, monitoring, training-approval)
   contracts/        ← Pydantic I/O models
-  tools/            ← dataset validator/structurer, YOLO trainer/evaluator, data intake scanner, pseudo-labeler, label QA checker, model decider, deployer, monitor, report writer
-  integrations/     ← Azure ML client, Azure ML Online Endpoint deployer, MLflow tracking, model + dataset registry backends, workflow state store
+  tools/            ← dataset validator/structurer, YOLO trainer/evaluator, data intake scanner, pseudo-labeler, label QA checker, model decider, deployer, monitor, report writer, Azure ML Pipeline runner
+  integrations/     ← Azure ML client, Azure ML Online Endpoint deployer, MLflow tracking, model + dataset registry backends, workflow state store, Azure Blob artifact store, Application Insights log client, webhook notification client
   azure_jobs/       ← entry scripts submitted to Azure ML (train_yolo.py, eval_yolo.py) + Online Endpoint scoring script (score.py)
   workflows/        ← MVPWorkflow (5-step), OrchestratorWorkflow (full configurable pipeline), promotion policy
   observability/    ← structured logging
+  web/              ← FastAPI web dashboard (`agentic-mlops serve`) — requires the `web` extra
   cli/              ← Typer CLI
 tests/
-  unit/             ← 500 tests across all agents, tools, and integrations
+  unit/             ← 626 tests across all agents, tools, and integrations
   conftest.py       ← shared fixtures
 configs/
   training.example.yaml
@@ -106,7 +107,8 @@ configs/
 | `approve` | Record a human approval decision (interactive or `--no-interactive --action ...`) |
 | `register-model` | Register an approved model: `--backend local` (default) \| `mlflow` \| `azure_ml` |
 | `run-mvp` | Chain all five agents end-to-end (validate → train → evaluate → approve → register) |
-| `run-workflow` | Run the full, configurable Orchestrator pipeline (any subset of 10 steps, config from one YAML file, persistent state + resume) |
+| `run-workflow` | Run the full, configurable Orchestrator pipeline (any subset of 11 steps, config from one YAML file, persistent state + resume) |
+| `serve` | Start the web dashboard (workflow list/detail, H4/H5 approvals, model + dataset registry browsing, monitoring reports) — requires the `web` extra |
 
 See `agentic-mlops <command> --help` for every flag, or [`CLAUDE.md`](CLAUDE.md) for a full
 architecture walkthrough with worked examples for each runner and backend.
@@ -209,6 +211,10 @@ creates/updates the deployment (scoring script: `azure_jobs/score.py`), then rou
 
 ## Extending
 
-- Azure ML: see `src/agentic_mlops/integrations/azure_ml_client.py`, `src/agentic_mlops/tools/training_runner.py`, `src/agentic_mlops/tools/evaluation_runner.py`, `src/agentic_mlops/integrations/azure_ml_online_endpoint.py`, `src/agentic_mlops/integrations/dataset_registry.py::AzureMLDatasetRegistryClient`
+- Azure ML: see `src/agentic_mlops/integrations/azure_ml_client.py`, `src/agentic_mlops/tools/training_runner.py`, `src/agentic_mlops/tools/evaluation_runner.py`, `src/agentic_mlops/tools/pipeline_runner.py::AzureMLPipelineRunner`, `src/agentic_mlops/integrations/azure_ml_online_endpoint.py`, `src/agentic_mlops/integrations/dataset_registry.py::AzureMLDatasetRegistryClient`
 - Azure job scripts: `src/agentic_mlops/azure_jobs/train_yolo.py`, `src/agentic_mlops/azure_jobs/eval_yolo.py`, `src/agentic_mlops/azure_jobs/score.py`
 - MLflow: see `src/agentic_mlops/integrations/mlflow_client.py`, `src/agentic_mlops/integrations/model_registry.py::MLflowModelRegistryClient`
+- Artifact mirroring to Blob: `src/agentic_mlops/integrations/artifact_store.py::AzureBlobArtifactStore`
+- Monitoring log source: `src/agentic_mlops/integrations/appinsights_log_client.py::ApplicationInsightsLogClient`
+- Orchestrator notifications: `src/agentic_mlops/integrations/notification_client.py::WebhookNotificationClient`
+- Web dashboard: `src/agentic_mlops/web/` (`app.py` FastAPI factory, `routes.py`, `reader.py`)

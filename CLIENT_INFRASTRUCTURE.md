@@ -4,10 +4,33 @@
 > все пути к файлам и имена классов проверены `grep`/`Read` непосредственно
 > перед записью этого документа). Все 489 unit-тестов проходят на момент
 > написания. Обновлено 2026-07-13: (1) исправлена найденная в этом же
-> документе нерабочая `azure_integration` pytest-команда — см. раздел 10;
+> документе нерабочая `azure_integration` pytest-команда (см. раздел
+> "Что дальше", в текущей нумерации — раздел 15);
 > (2) реализован Azure ML Data Asset backend для Dataset Registry (был
 > единственным реестром без Azure-варианта) — см. раздел 8. 500/500
 > unit-тестов на текущий момент.
+>
+> Обновлено 2026-07-20: добавлено 5 новых клиентов/подсистем — Azure ML
+> Pipeline Runner (многошаговый `dsl.pipeline` вместо отдельных
+> CommandJob), Azure Blob Artifact Store (зеркалирование артефактов
+> прогона в Blob), Application Insights Log Client (второй источник логов
+> для `MonitoringAgent`, помимо локального JSONL), Webhook Notification
+> Client (Teams/Slack-уведомления для `OrchestratorWorkflow`) и веб-дашборд
+> (`agentic-mlops serve`, FastAPI) — см. разделы 10-14. При ревью найден
+> и исправлен реальный баг: кнопка "Approve" в веб-дашборде писала
+> `approval_decision.json` на диск, но никак не передавала это решение
+> обратно в приостановленный workflow — H4/H5-гейты фактически не
+> продвигались после нажатия кнопки (исправлено в `web/routes.py` —
+> `approve_submit` теперь вызывает `_resume_workflow` с
+> `training_approval_action`/`approval_action`, выставленным из формы;
+> проверено end-to-end через `TestClient` — создание → пауза на H4 →
+> approve → пауза на H5 → approve → completed). Также исправлена
+> потенциальная бесконечная блокировка фонового потока (веб-запрос без
+> TTY попадал на `input()` в `HumanApprovalAgent`/`TrainingApprovalAgent`,
+> если `interactive_*` не была явно выставлена в `False`) и path-traversal
+> в `web/reader.py` (`workflow_id`/`model_name`/`dataset_name`/`step` из
+> URL не проверялись на `..`/`/`/`\`). 626/626 unit-тестов на текущий
+> момент.
 
 Документ описывает: (1) все "клиенты" — обёртки над внешними системами
 (Azure ML, MLflow, локальные реестры), (2) что из них реально работает, а
@@ -29,8 +52,13 @@
 | 6 | Model Registry | `integrations/model_registry.py` | ✅ реальный (Local/MLflow/AzureML) |
 | 7 | Dataset Registry | `integrations/dataset_registry.py` | ✅ реальный (Local + Azure ML) |
 | 8 | Workflow State Store | `integrations/workflow_state_store.py` | ✅ реальный (чисто локальный, JSON) |
+| 9 | Azure ML Pipeline Runner | `tools/pipeline_runner.py` | ✅ реальный (2-шаговый `dsl.pipeline`) |
+| 10 | Azure Blob Artifact Store | `integrations/artifact_store.py` | ✅ реальный (NoOp/AzureBlob/Fake) |
+| 11 | Application Insights Log Client | `integrations/appinsights_log_client.py` | ✅ реальный (Local/AppInsights/Fake) |
+| 12 | Webhook Notification Client | `integrations/notification_client.py` | ✅ реальный (NoOp/Webhook/Fake) |
+| 13 | Web-дашборд | `web/app.py`, `web/routes.py`, `web/reader.py` | ✅ реальный (FastAPI, только чтение с диска + запуск dry-run) |
 
-Общий паттерн для всех "внешних" клиентов (1, 2, 3, 4, 6-частично):
+Общий паттерн для всех "внешних" клиентов (1, 2, 3, 4, 6-частично, 9-12):
 **Factory-инъекция**. Реальный класс делает настоящие вызовы SDK; для
 тестов вместо него подставляется `Fake*`-класс с идентичным интерфейсом —
 поэтому тесты гоняют **тот же самый код**, который выполнился бы в
@@ -242,33 +270,139 @@ State Store не существует — это осознанное решен
 
 ---
 
-## 10. Что дальше нужно сделать (реальные пробелы)
+## 10. Azure ML Pipeline Runner (`tools/pipeline_runner.py`)
+
+- **`AzureMLPipelineRunner`** — РЕАЛЬНЫЙ (добавлено в этой сессии).
+  До этого train/eval на Azure ML — это два независимых `CommandJob`
+  (см. разделы 3-4): между ними веса скачиваются локально и заново
+  заливаются для eval-шага. `AzureMLPipelineRunner` вместо этого строит
+  один `azure.ai.ml.dsl.pipeline` из двух шагов, где `best.pt` передаётся
+  из train-шага в eval-шаг напрямую через pipeline data-flow — без
+  промежуточного download/upload. Переиспользует `load_policy()`/
+  `metrics_from_json()` из `evaluation_runner.py` (не дублирует логику
+  promotion policy). Подключается через `--training-runner
+  azure-ml-pipeline` на `run-mvp`/`run-workflow` (не отдельный CLI-флаг
+  для eval — оба шага идут одним PipelineJob).
+- **`FakeAzureMLClientFactory`** — тот же фейк, что и для остальных Azure
+  клиентов, переиспользован без изменений.
+
+---
+
+## 11. Azure Blob Artifact Store (`integrations/artifact_store.py`)
+
+- **`NoOpArtifactStore`** — дефолт, ничего не делает (используется, если
+  `azure_config_path` не передан или `storage.enabled=false`).
+- **`AzureBlobArtifactStore`** — РЕАЛЬНЫЙ. После каждого шага
+  `OrchestratorWorkflow` best-effort зеркалирует директорию артефактов
+  шага + `state.json`/`audit_log.jsonl` в Azure Blob Storage. Два режима
+  инициализации: явный (`storage.account_url` + `storage.container_name`
+  в `AzureMLConfig`) или авто-резолв через `ml_client.datastores.get(...)`
+  (читает account/container из воркспейс-datastore). Ошибка загрузки
+  ОДНОГО файла — просто warning в лог, никогда не роняет весь workflow
+  (та же философия, что у `WebhookNotificationClient.send()`).
+- **`FakeArtifactStore`** — тестовый дублёр, пишет в `self.uploaded`/
+  `self.downloaded`.
+
+---
+
+## 12. Application Insights Log Client (`integrations/appinsights_log_client.py`)
+
+- **`LocalFileLogClient`** — дефолт, читает локальный JSONL (как раньше
+  и было единственным вариантом для `MonitoringAgent`).
+- **`ApplicationInsightsLogClient`** — РЕАЛЬНЫЙ. Запрашивает таблицу
+  `traces` в App Insights через `azure-monitor-query`
+  (`LogsQueryClient`). Требует, чтобы записи туда писал сам
+  `azure_jobs/score.py` (см. ниже) — формат: `message="inference_record"`
+  + `customDimensions` с `endpoint_name`/`image_id`/`latency_ms`/`error`/
+  `detections` (detections сериализован как JSON-строка). Принимает
+  `workspace_id` (App Insights Application ID, GUID) + `endpoint_name` +
+  `window_seconds`. Включается через `MonitoringInput.source="azure_monitor"`
+  (по умолчанию `"local"`).
+- **`FakeInferenceLogClient`** — тестовый дублёр.
+- **Сторона отправки** — `azure_jobs/score.py` теперь тоже пишет эти
+  записи: `_setup_ai_telemetry()` (soft-import `opencensus.ext.azure`,
+  включается переменной окружения `APPLICATIONINSIGHTS_CONNECTION_STRING`)
+  + `_emit_inference_record()` вызывается на каждый `run()`-запрос
+  (успешный и неуспешный), с замером `latency_ms`. Без переменной
+  окружения телеметрия просто не настраивается — `score.py` работает как
+  раньше.
+
+---
+
+## 13. Webhook Notification Client (`integrations/notification_client.py`)
+
+- **`NoOpNotificationClient`** — дефолт, ничего не делает.
+- **`WebhookNotificationClient`** — РЕАЛЬНЫЙ. Только stdlib
+  (`urllib.request`, без новых зависимостей). Шлёт Teams MessageCard
+  и/или Slack attachment-пейлоад на настроенные URL. `notify_on` в
+  `NotificationConfig` (`contracts/notification.py`) контролирует, какие
+  события реально шлют POST — по умолчанию `step_failed` + 4
+  terminal-события воркфлоу (`workflow_completed`/`failed`/`blocked`/
+  `pending_approval`); `step_started`/`step_completed` можно добавить
+  для подробного режима. `send()` НИКОГДА не кидает исключение — сетевая
+  ошибка или non-2xx статус просто логируются как warning.
+- **`FakeNotificationClient`** — тестовый дублёр, пишет в `self.events`.
+- Подключается через `OrchestratorInput.notifications` — см.
+  `configs/orchestrator.example.yaml`.
+
+---
+
+## 14. Веб-дашборд (`web/app.py`, `web/routes.py`, `web/reader.py`)
+
+FastAPI-приложение, требует extra `pip install -e ".[dev,web]"`. Запуск:
+`agentic-mlops serve --port 8000 --runs-dir runs --registry-dir
+outputs/model_registry --dataset-registry-dir outputs/dataset_registry`.
+
+- **Чтение** (`web/reader.py`) — чисто read-only слой поверх тех же
+  файлов на диске, что пишет `WorkflowStateStore`/`LocalModelRegistryClient`/
+  `LocalDatasetVersionRegistry` (никакой БД). Список/детали воркфлоу,
+  registry моделей/датасетов, отчёты мониторинга.
+- **H4/H5 approve прямо из браузера** (`web/routes.py::approve_submit`) —
+  форма пишет решение и **вызывает `_resume_workflow()`**, который
+  перечитывает `input.json` исходного запуска, подставляет выбранное
+  действие в `training_approval_action`/`approval_action` и
+  перезапускает `OrchestratorWorkflow` в фоновом потоке с
+  `resume=True`. **Найденный при ревью баг**: изначально форма только
+  писала `approval_decision.json` на диск, но это не тот файл, который
+  читает orchestrator при возобновлении (`training_approval_action`/
+  `approval_action` на `OrchestratorInput` — единственный канал ввода
+  решения) — то есть кнопка "Approve" физически ничего не продвигала.
+  Исправлено и проверено end-to-end через `TestClient` (создание →
+  пауза на H4 → approve → пауза на H5 → approve → completed).
+- **Некоторые дополнительно исправленные при ревью проблемы**:
+  веб-запросы принудительно выставляют `interactive_approval=False`/
+  `interactive_training_approval=False` (иначе воркфлоу, стартованный
+  из CLI с интерактивным режимом по умолчанию, завис бы на `input()`
+  внутри фонового потока без TTY); `workflow_id`/`model_name`/
+  `dataset_name`/`step` из URL теперь проверяются
+  (`reader.is_safe_path_id()`) на path traversal (`..`, `/`, `\`).
+- **Безопасность** — опциональный HTTP Basic Auth
+  (`DASHBOARD_PASSWORD` env var или `--password`), выключен по умолчанию
+  (для локальной разработки). Сравнение пароля — `secrets.compare_digest`
+  (не уязвимо к timing-атаке).
+- **Реальный запуск воркфлоу только для `dry_run=True`** — форма "New
+  Workflow" для не-dry-run прогонов просто показывает готовую
+  `agentic-mlops run-workflow ...` команду для запуска из терминала
+  (обучение — потенциально долгая, дорогая операция, веб-слой её сам не
+  триггерит).
+- Отдельных unit-тестов на `routes.py` пока нет (только на
+  `reader.py` — `tests/unit/test_web_reader.py`); корректность H4/H5
+  flow проверена вручную через `fastapi.testclient.TestClient` в рамках
+  этого ревью, не автоматизирована в CI.
+
+---
+
+## 15. Что дальше нужно сделать (реальные пробелы)
 
 По убыванию значимости:
 
-1. **Azure Monitor / Application Insights для `MonitoringAgent`** —
-   сейчас читает только локальный JSONL-файл логов предсказаний. Нет
-   интеграции с живыми метриками endpoint'а. Если Online Endpoint (п.5)
-   реально задеплоен, естественный источник логов для Monitoring — как
-   раз Application Insights, к которому Managed Online Endpoint можно
-   подключить в Azure, но это не реализовано ни на стороне сбора логов,
-   ни на стороне их выгрузки в наш JSONL-формат.
-2. **Notification client (Teams/Slack/Email) для `OrchestratorWorkflow`**
-   — переходы состояний видны только через `audit_log.jsonl` и
-   структурированные логи. Реального push-уведомления нет вообще.
-3. **Docker image build / AKS / CI-CD trigger для `DeploymentAgent`** —
+1. **Docker image build / AKS / CI-CD trigger для `DeploymentAgent`** —
    реализован только `local` (локальный релиз) и `azure_ml` (Managed
    Online Endpoint) бэкенды. Классический контейнерный деплой (свой
    Docker-образ + собственный Kubernetes) не начат.
-4. ~~Azure ML Data Asset для `DatasetVersioningAgent`~~ — **РЕАЛИЗОВАНО
-   2026-07-13**, см. раздел 8 (`AzureMLDatasetRegistryClient`).
-5. **VOC label format** для Dataset Structuring Agent — есть только
+2. **VOC label format** для Dataset Structuring Agent — есть только
    `yolo`/`coco`.
-6. **Многошаговый Azure ML Pipeline** — сейчас каждый Azure-шаг
-   (train/eval) — это отдельный `CommandJob`, а не единый связанный
-   `azure.ai.ml.dsl.pipeline`. Из-за этого нет нативного Azure-lineage
-   между шагами (это компенсируется собственным `lineage.json`).
-7. **`H4 Training Approval`, реализован, НО**: расположен между
+3. **`H4 Training Approval`, реализован, НО**: расположен между
    `dataset_versioning` и `training` — это моя (не из спеки буквально)
    трактовка; спека (`00_orchestrator_agent.md`) в примере таблицы
    переходов скорее намекает на approval "перед повторным обучением"
@@ -277,6 +411,14 @@ State Store не существует — это осознанное решен
    вообще (нет цикла "закончили оценку → решили RETRAIN → снова прогнали
    training с новым workflow_id"). Сейчас каждый `workflow_id` — это
    строго линейный проход один раз.
+4. **Hard samples из `MonitoringAgent` не подаются автоматически обратно
+   в Data Intake** — только манифест для ручной разборки человеком.
+5. **Teams/Slack интерактивные approve** — вебхуки (раздел 13) только
+   исходящие уведомления; approve/reject всё ещё делается через веб-UI
+   (раздел 14) или CLI, не ответом в самом Slack/Teams.
+6. **Нет unit-тестов на `web/routes.py`** — только на `web/reader.py`
+   (`tests/unit/test_web_reader.py`); H4/H5-flow дашборда проверен вручную
+   через `TestClient` в рамках этого ревью, но не в CI.
 
 ### ~~Найденная попутно~~ — ИСПРАВЛЕНО (2026-07-13)
 
@@ -306,7 +448,7 @@ State Store не существует — это осознанное решен
 job внутри pytest) — если он всё ещё нужен — отдельная будущая задача,
 не сделана в рамках этого исправления.
 
-Проверено вручную (см. раздел 11.3 ниже): без `--azure-config` тесты
+Проверено вручную (см. раздел 16.3 ниже): без `--azure-config` тесты
 корректно `SKIPPED` (и в `pytest tests/unit`, и в голом `pytest`); с
 синтаксически верным, но ненастоящим `azure_ml.yaml` — тест доходит до
 реального вызова `DefaultAzureCredential()` и падает с настоящей
@@ -315,9 +457,9 @@ job внутри pytest) — если он всё ещё нужен — отде
 
 ---
 
-## 11. Как тестировать то, что есть сейчас
+## 16. Как тестировать то, что есть сейчас
 
-### 11.1. Юнит-тесты (быстро, бесплатно, без интернета) — уже всё покрыто
+### 16.1. Юнит-тесты (быстро, бесплатно, без интернета) — уже всё покрыто
 
 ```bash
 pip install -e ".[dev]"
@@ -345,7 +487,7 @@ pytest tests/unit -q          # коротко
 `ManagedOnlineEndpoint` и т.д.) — просто финальный сетевой вызов
 подменяется.
 
-### 11.2. Проверка вручную одного клиента (без pytest)
+### 16.2. Проверка вручную одного клиента (без pytest)
 
 Пример — Azure ML Online Endpoint с фейковым клиентом (безопасно, ничего
 реального не создаёт):
@@ -373,7 +515,7 @@ print(out.success, out.scoring_uri)
 Так же можно проверить `FakeMLflowClient`, `FakeModelRegistryClient` и
 т.д. — все они лежат в `integrations/*.py` рядом с реальными классами.
 
-### 11.3. Реальный тест против живого Azure ML
+### 16.3. Реальный тест против живого Azure ML
 
 **a) Connectivity-проверка (бесплатно, автоматизирована через pytest)**
 
@@ -416,7 +558,7 @@ agentic-mlops deploy-model --model-name my-model --backend azure_ml \
 Готового `pytest`-теста для этого пути нет (см. пункт про
 `azure_integration` в разделе 10) — только ручной прогон через CLI.
 
-### 11.4. Реальный тест MLflow (бесплатно, только диск)
+### 16.4. Реальный тест MLflow (бесплатно, только диск)
 
 ```bash
 pip install -e ".[dev,mlflow]"

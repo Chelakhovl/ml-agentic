@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Monitoring — MLOps{% endblock %}
+
+{% block scripts %}
+{% if reports %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Monitoring Reports</h1>
+  <p>Inference monitoring reports from all pipeline runs</p>
+</div>
+
+{% if reports %}
+{% for r in reports %}
+<div class="card">
+  <div class="card-title" style="display:flex; justify-content:space-between; align-items:center">
+    <span>
+      <a href="/monitoring/{{ r._workflow_id }}/{{ r._step }}" class="table-link" style="font-size:inherit; font-weight:inherit">{{ r.get('endpoint_name', 'unknown endpoint') }}</a>
+      <span class="badge {{ status_class(r.get('status','').replace('_','-')) }}" style="margin-left:8px">{{ r.get('status','—') }}</span>
+      {% if r.get('drift_detected') %}
+      <span class="badge badge-failed" style="margin-left:4px">drift detected</span>
+      {% endif %}
+    </span>
+    <span class="muted" style="text-transform:none; font-weight:400; font-size:12px">
+      Workflow: <a href="/workflows/{{ r._workflow_id }}" class="table-link">{{ r._workflow_id }}</a>
+      &nbsp;·&nbsp; {{ fmt_dt(r.get('generated_at')) }}
+      &nbsp;·&nbsp; <a href="/monitoring/{{ r._workflow_id }}/{{ r._step }}" class="table-link">Details →</a>
+    </span>
+  </div>
+
+  <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap:12px 20px; margin-bottom:16px">
+    {% macro mcard(label, val, unit='') %}
+    <div>
+      <div style="font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); margin-bottom:3px">{{ label }}</div>
+      <div style="font-size:18px; font-weight:700; color:var(--text)">
+        {% if val is not none %}{{ val }}{{ unit }}{% else %}—{% endif %}
+      </div>
+    </div>
+    {% endmacro %}
+
+    {{ mcard("Predictions", r.get('total_predictions')) }}
+    {{ mcard("Hard Samples", r.get('num_hard_samples')) }}
+    {% set metrics = r.get('metrics', {}) %}
+    {{ mcard("Avg Confidence", "%.2f" | format(metrics.get('avg_confidence', 0)) if metrics.get('avg_confidence') is not none else none) }}
+    {{ mcard("p95 Latency", "%.0f" | format(metrics.get('p95_latency_ms', 0)) if metrics.get('p95_latency_ms') is not none else none, "ms") }}
+    {{ mcard("Error Rate", "%.2f%%" | format(metrics.get('error_rate', 0) * 100) if metrics.get('error_rate') is not none else none) }}
+  </div>
+
+  <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:13px; margin-bottom:8px">
+    <span>
+      <span class="muted">Recommended action:</span>
+      <strong style="margin-left:4px">{{ r.get('recommended_action', 'no_action') }}</strong>
+    </span>
+    {% if r.get('requires_human_review') %}
+    <span class="badge badge-pending">human review required</span>
+    {% endif %}
+    {% if r.get('new_classes_detected') %}
+    <span class="badge badge-failed">new classes: {{ r.new_classes_detected | join(', ') }}</span>
+    {% endif %}
+    {% if r.get('triggered_alerts') %}
+    <span class="muted">Alerts: {{ r.triggered_alerts | join(', ') }}</span>
+    {% endif %}
+  </div>
+
+  {% if r.get('window_start') or r.get('window_end') %}
+  <p class="muted" style="font-size:12px">
+    Window: {{ fmt_dt(r.get('window_start')) }} → {{ fmt_dt(r.get('window_end')) }}
+  </p>
+  {% endif %}
+
+  {% set dist = r.get('class_distribution', {}) %}
+  {% if dist %}
+  <div style="margin-top:12px">
+    <div style="font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); margin-bottom:8px">Class Distribution</div>
+    <canvas id="dist_{{ loop.index }}" height="60"></canvas>
+  </div>
+  <script>
+  (function(){
+    const dist = {{ dist | tojson }};
+    const labels = Object.keys(dist);
+    const vals = labels.map(k => dist[k]);
+    new Chart(document.getElementById('dist_{{ loop.index }}'), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{ data: vals, backgroundColor: 'rgba(0,113,227,.7)', borderRadius: 4 }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+      }
+    });
+  })();
+  </script>
+  {% endif %}
+</div>
+{% endfor %}
+
+{% else %}
+<div class="card">
+  <div class="empty-state">
+    <div class="empty-icon">📊</div>
+    <p>No monitoring reports found.<br>
+       Run <code>agentic-mlops monitor &lt;predictions.jsonl&gt; --endpoint-name ...</code> to generate one.</p>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -13,6 +13,7 @@ from agentic_mlops.observability.logging import configure_logging
 
 if TYPE_CHECKING:
     from agentic_mlops.contracts.mlflow_config import MLflowConfig
+    from agentic_mlops.integrations.artifact_store import ArtifactStore
     from agentic_mlops.integrations.mlflow_client import MLflowTrackingClientBase
 
 app = typer.Typer(
@@ -67,6 +68,25 @@ def _resolve_mlflow(
         client = NoOpMLflowTrackingClient()
 
     return client, cfg
+
+
+def _make_artifact_store(azure_config_path: str | None) -> ArtifactStore:
+    """Return AzureBlobArtifactStore when storage is enabled, else NoOpArtifactStore."""
+    from agentic_mlops.integrations.artifact_store import (  # noqa: PLC0415
+        AzureBlobArtifactStore,
+        NoOpArtifactStore,
+    )
+
+    if azure_config_path:
+        try:
+            from agentic_mlops.contracts.azure_ml import AzureMLConfig  # noqa: PLC0415
+
+            cfg = AzureMLConfig.from_yaml(azure_config_path)
+            if cfg.storage.enabled:
+                return AzureBlobArtifactStore(cfg)
+        except Exception as exc:
+            console.print(f"[yellow]Artifact store init failed (blob disabled): {exc}[/yellow]")
+    return NoOpArtifactStore()
 
 
 @app.command("validate-dataset")
@@ -943,9 +963,23 @@ def deploy_model(
 @app.command("monitor")
 def monitor(
     predictions_log: str = typer.Argument(
-        ..., help="Path to a JSON-Lines predictions log (one inference record per line)"
+        None,
+        help=(
+            "Path to a JSON-Lines predictions log (required when --source local, "
+            "the default; omit when --source azure-monitor)"
+        ),
     ),
     endpoint_name: str = typer.Option(..., "--endpoint-name", help="Deployed endpoint name"),
+    source: str = typer.Option(
+        "local",
+        "--source",
+        help="Log source: 'local' (read a JSONL file) or 'azure-monitor' (query App Insights)",
+    ),
+    app_insights_workspace_id: str = typer.Option(
+        None,
+        "--app-insights-workspace-id",
+        help="App Insights Application ID (GUID). Required when --source azure-monitor",
+    ),
     model_version: str = typer.Option(
         "", "--model-version", help="Deployed model version, if known"
     ),
@@ -973,16 +1007,57 @@ def monitor(
     from agentic_mlops.agents.monitoring import MonitoringAgent  # noqa: PLC0415
     from agentic_mlops.contracts.monitoring import MonitoringInput  # noqa: PLC0415
 
-    artifacts_dir = (
-        Path(output_dir) if output_dir else Path(predictions_log).parent / "monitoring_out"
-    )
+    # Normalize source value: CLI uses "azure-monitor", contract uses "azure_monitor"
+    source_norm = source.replace("-", "_")
+    if source_norm not in ("local", "azure_monitor"):
+        console.print(f"[red]Invalid --source '{source}'. Use 'local' or 'azure-monitor'.[/red]")
+        raise typer.Exit(code=1)
 
-    agent = MonitoringAgent(artifacts_dir=artifacts_dir)
+    log_client = None
+    if source_norm == "local":
+        if not predictions_log:
+            console.print("[red]predictions_log argument is required when --source local[/red]")
+            raise typer.Exit(code=1)
+        artifacts_dir = (
+            Path(output_dir) if output_dir else Path(predictions_log).parent / "monitoring_out"
+        )
+    else:
+        if not app_insights_workspace_id:
+            console.print(
+                "[red]--app-insights-workspace-id is required when --source azure-monitor[/red]"
+            )
+            raise typer.Exit(code=1)
+        from agentic_mlops.integrations.appinsights_log_client import (  # noqa: PLC0415
+            ApplicationInsightsLogClient,
+        )
+        from agentic_mlops.tools.monitor import _parse_window  # noqa: PLC0415
+
+        window_seconds = _parse_window(monitoring_window)
+        if window_seconds is None:
+            console.print(
+                f"[red]Invalid --monitoring-window '{monitoring_window}'. "
+                "Expected e.g. '24h', '7d', '30m'.[/red]"
+            )
+            raise typer.Exit(code=1)
+        try:
+            log_client = ApplicationInsightsLogClient(
+                workspace_id=app_insights_workspace_id,
+                endpoint_name=endpoint_name,
+                window_seconds=window_seconds,
+            )
+        except RuntimeError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+        artifacts_dir = Path(output_dir) if output_dir else Path(".") / "monitoring_out"
+
+    agent = MonitoringAgent(artifacts_dir=artifacts_dir, log_client=log_client)
     result = agent.run(
         MonitoringInput(
             endpoint_name=endpoint_name,
             model_version=model_version,
-            predictions_log_path=predictions_log,
+            source=source_norm,
+            predictions_log_path=predictions_log or "",
+            app_insights_workspace_id=app_insights_workspace_id,
             monitoring_window=monitoring_window,
             baseline_class_distribution_path=baseline_class_distribution,
             critical_classes=(
@@ -1630,7 +1705,9 @@ def run_mvp(
         False, "--fail-on-warnings", help="Treat dataset warnings as failures"
     ),
     training_runner: str = typer.Option(
-        None, "--training-runner", help="Override training runner: fake | local-yolo | azure-ml"
+        None,
+        "--training-runner",
+        help="Override training runner: fake | local-yolo | azure-ml | azure-ml-pipeline",
     ),
     evaluation_runner: str = typer.Option(
         None,
@@ -1697,10 +1774,12 @@ def run_mvp(
         raise typer.Exit(code=1)
 
     mlflow_client, mlflow_cfg = _resolve_mlflow(mlflow_config, enable_mlflow)
+    artifact_store = _make_artifact_store(azure_config)
 
     workflow = MVPWorkflow(
         mlflow_client=mlflow_client if mlflow_cfg.enabled else None,
         mlflow_config=mlflow_cfg if mlflow_cfg.enabled else None,
+        artifact_store=artifact_store,
     )
     result = workflow.run(
         MVPWorkflowInput(
@@ -1780,10 +1859,12 @@ def run_workflow(
         raise typer.Exit(code=1)
 
     mlflow_client, mlflow_cfg = _resolve_mlflow(mlflow_config, enable_mlflow)
+    artifact_store = _make_artifact_store(inp.azure_config_path)
 
     result = OrchestratorWorkflow(
         mlflow_client=mlflow_client if mlflow_cfg.enabled else None,
         mlflow_config=mlflow_cfg if mlflow_cfg.enabled else None,
+        artifact_store=artifact_store,
     ).run(inp)
 
     _print_orchestrator_result(result)
@@ -1878,6 +1959,67 @@ def _print_mvp_summary(result) -> None:  # type: ignore[type-arg]
     if result.workflow_summary_path:
         summary_dir = Path(result.workflow_summary_path).parent
         console.print(f"\nWorkflow artifacts: [bold]{summary_dir}[/bold]")
+
+
+@app.command("serve")
+def serve(
+    port: int = typer.Option(8000, "--port", "-p", help="Port to listen on"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
+    runs_dir: str = typer.Option(
+        "runs", "--runs-dir", help="Directory containing workflow run state files"
+    ),
+    registry_dir: str = typer.Option(
+        "outputs/model_registry", "--registry-dir", help="Local model registry root directory"
+    ),
+    datasets_dir: str = typer.Option(
+        "outputs/dataset_registry",
+        "--dataset-registry-dir",
+        help="Local dataset registry root directory",
+    ),
+    reload: bool = typer.Option(False, "--reload", help="Enable auto-reload (development mode)"),
+    password: str = typer.Option(
+        "",
+        "--password",
+        envvar="DASHBOARD_PASSWORD",
+        help="HTTP Basic Auth password. Omit (or leave DASHBOARD_PASSWORD unset) to disable auth.",
+    ),
+    user: str = typer.Option(
+        "admin",
+        "--user",
+        envvar="DASHBOARD_USER",
+        help="HTTP Basic Auth username (default: admin).",
+    ),
+) -> None:
+    """Start the MLOps web dashboard (requires the 'web' extra: pip install -e '.[web]')."""
+    try:
+        import uvicorn
+    except ImportError:
+        console.print(
+            "[red]The 'web' extra is required. Install with:[/red]\n"
+            "  pip install -e '.[web]'"
+        )
+        raise typer.Exit(code=1) from None
+
+    from agentic_mlops.web.app import create_app
+
+    web_app = create_app(
+        runs_dir=runs_dir,
+        registry_dir=registry_dir,
+        datasets_dir=datasets_dir,
+        dashboard_user=user,
+        dashboard_password=password,
+    )
+    console.print(f"[bold green]MLOps Dashboard[/bold green]  http://{host}:{port}")
+    console.print(f"  Runs dir     : [bold]{runs_dir}[/bold]")
+    console.print(f"  Registry dir : [bold]{registry_dir}[/bold]")
+    console.print(f"  Datasets dir : [bold]{datasets_dir}[/bold]")
+    if password:
+        console.print(f"  Auth         : Basic Auth (user: [bold]{user}[/bold])")
+    else:
+        console.print(
+            "  Auth         : [yellow]disabled[/yellow] — set DASHBOARD_PASSWORD to enable"
+        )
+    uvicorn.run(web_app, host=host, port=port, reload=reload)
 
 
 if __name__ == "__main__":

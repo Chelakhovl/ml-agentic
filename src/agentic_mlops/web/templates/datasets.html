@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Dataset Registry — MLOps{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Dataset Registry</h1>
+  <p>All registered dataset versions from the local dataset registry</p>
+</div>
+
+<div class="card">
+  <div class="card-title">Registered Datasets</div>
+  {% if datasets %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Dataset Name</th>
+          <th>Latest Version</th>
+          <th>Hash</th>
+          <th>Registered</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in datasets %}
+        <tr>
+          <td>
+            <a href="/datasets/{{ d.dataset_name }}" class="table-link">{{ d.dataset_name }}</a>
+          </td>
+          <td class="mono muted">v{{ d.get('version', '—') }}</td>
+          <td class="mono muted" style="font-size:11px">
+            {% if d.get('hash') %}{{ d.hash[:12] }}…{% else %}—{% endif %}
+          </td>
+          <td class="muted">{{ fmt_dt(d.get('registered_at')) }}</td>
+          <td><a href="/datasets/{{ d.dataset_name }}" class="btn btn-secondary btn-sm">Details →</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-icon">🗂</div>
+    <p>No datasets registered yet.<br>
+       Run <code>agentic-mlops version-dataset &lt;path&gt; --dataset-name ...</code> to register one.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Approve — {{ state.workflow_id }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Approval Gate — <span class="mono" style="font-size:18px">{{ state.workflow_id }}</span></h1>
+  <p>
+    Gate: <strong>{{ 'H4 — Training Approval' if gate == 'h4' else 'H5 — Model Approval' }}</strong>
+    &nbsp;·&nbsp;
+    Current state: <strong class="mono">{{ state.get('current_state','') }}</strong>
+  </p>
+</div>
+
+<div style="max-width:560px">
+
+  {% if gate == 'h4' %}
+  <div class="alert alert-warning">
+    <strong>H4 Training Approval</strong><br>
+    Review the dataset quality report before approving training.
+    An <code>approve_training</code> decision will let the pipeline continue.
+    A <code>reject_training</code> decision ends the run gracefully.
+  </div>
+  {% else %}
+  <div class="alert alert-warning">
+    <strong>H5 Model Approval</strong><br>
+    Review the evaluation metrics before approving this model for registration.
+    An <code>approve_model</code> decision triggers model registration + optional deployment.
+    Any other action ends the run gracefully with an appropriate status.
+  </div>
+  {% endif %}
+
+  <!-- Step outputs for context -->
+  {% set step_outputs = state.get('step_outputs', {}) %}
+  {% if step_outputs %}
+  <div class="card">
+    <div class="card-title">Context from completed steps</div>
+    <table style="font-size:12.5px">
+      <tbody>
+        {% for step, out in step_outputs.items() %}
+        {% if out and out.items() | list | length > 0 %}
+        <tr>
+          <td class="muted" style="padding:5px 0; width:150px; vertical-align:top">{{ step }}</td>
+          <td style="padding:5px 0" class="mono" style="font-size:11px">
+            {% for k, v in out.items() %}
+            {% if v is not none and v != '' and v != [] %}
+            <span style="color:var(--muted)">{{ k }}:</span> {{ v }}&nbsp;&nbsp;
+            {% endif %}
+            {% endfor %}
+          </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-title">Decision</div>
+    <form method="POST" action="/approve/{{ state.workflow_id }}">
+      <div class="form-group">
+        <label>Action</label>
+        <select name="action" required>
+          <option value="" disabled selected>— select an action —</option>
+          {% for action in actions %}
+          <option value="{{ action }}">{{ action }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>Approver Name</label>
+        <input type="text" name="approver" placeholder="jane.doe" required>
+      </div>
+
+      <div class="form-group">
+        <label>Comment <span class="hint">(optional)</span></label>
+        <textarea name="comment" placeholder="Looks good — metrics above threshold, approve for registration."></textarea>
+      </div>
+
+      <div style="display:flex; gap:10px; margin-top:4px">
+        <button type="submit" class="btn btn-primary">Submit Decision</button>
+        <a href="/workflows/{{ state.workflow_id }}" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+
+  <div class="alert alert-info">
+    After submitting, re-run the workflow with <code>--resume</code> to continue from this gate:
+    <pre class="cli" style="margin-top:10px"><button class="copy-btn">Copy</button>agentic-mlops run-workflow \
+  --workflow-id {{ state.workflow_id }} \
+  --config configs/orchestrator.yaml \
+  --resume</pre>
+  </div>
+
+</div>
+{% endblock %}

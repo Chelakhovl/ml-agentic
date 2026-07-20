@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Model Registry — MLOps{% endblock %}
+
+{% block content %}
+<div class="page-header" style="display:flex; justify-content:space-between; align-items:flex-start">
+  <div>
+    <h1>Model Registry</h1>
+    <p>All registered model versions from the local registry</p>
+  </div>
+  <a href="/registry/compare" class="btn btn-secondary">⇄ Compare models</a>
+</div>
+
+<div class="card">
+  <div class="card-title">Registered Models</div>
+  {% if models %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Model Name</th>
+          <th>Latest Version</th>
+          <th>mAP50</th>
+          <th>Registered</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in models %}
+        <tr>
+          <td>
+            <a href="/registry/{{ m.model_name }}" class="table-link">{{ m.model_name }}</a>
+          </td>
+          <td class="mono muted">v{{ m.get('version', '—') }}</td>
+          <td>
+            {% set map50 = m.get('map50') %}
+            {% if map50 is not none %}
+            <span style="color:{% if map50 >= 0.8 %}var(--green){% elif map50 >= 0.6 %}var(--orange){% else %}var(--red){% endif %}; font-weight:600">
+              {{ "%.3f" | format(map50) }}
+            </span>
+            {% else %}
+            <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td class="muted">{{ fmt_dt(m.get('registered_at')) }}</td>
+          <td><a href="/registry/{{ m.model_name }}" class="btn btn-secondary btn-sm">Details →</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-icon">📦</div>
+    <p>No models registered yet.<br>
+       Run a workflow with the <code>model_registry</code> step to register a model.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

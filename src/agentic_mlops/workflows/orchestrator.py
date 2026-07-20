@@ -27,9 +27,10 @@ policies и создает human approval gates." Concretely, this class:
     rather than starting a new one, and the run ends only on a terminal
     status (COMPLETED/FAILED/BLOCKED) — a PENDING_APPROVAL pause leaves it
     open. Disabled by default; enable via --mlflow-config/--enable-mlflow.
-  - has NO real Notification client (Teams/Slack/Email) — a documented gap,
-    same "no real infra beyond what's needed" pattern as every other
-    standalone agent's missing backend.
+  - optionally sends Teams/Slack webhook notifications (notification_client=
+    + OrchestratorInput.notifications: NotificationConfig) on key pipeline
+    events (step_failed, workflow_completed, workflow_failed, etc.). Same
+    injection pattern as mlflow_client. Disabled by default (NoOpNotificationClient).
 
 Deliberately NOT a BaseAgent subclass, matching MVPWorkflow's own placement in
 workflows/ rather than agents/ — this chains other agents, it doesn't wrap one
@@ -95,6 +96,7 @@ from agentic_mlops.contracts.training_approval import (
     TrainingApprovalAction,
     TrainingApprovalInput,
 )
+from agentic_mlops.integrations.artifact_store import ArtifactStore, NoOpArtifactStore
 from agentic_mlops.integrations.azure_ml_online_endpoint import AzureMLOnlineEndpointDeployer
 from agentic_mlops.integrations.dataset_registry import AzureMLDatasetRegistryClient
 from agentic_mlops.integrations.mlflow_client import MLflowTrackingClientBase
@@ -102,10 +104,12 @@ from agentic_mlops.integrations.model_registry import (
     AzureMLModelRegistryClient,
     ModelRegistryClientBase,
 )
+from agentic_mlops.integrations.notification_client import NotificationClientBase
 from agentic_mlops.integrations.workflow_state_store import WorkflowStateStore
 from agentic_mlops.observability.logging import get_logger
 from agentic_mlops.tools.deployer import ModelDeployer
 from agentic_mlops.tools.evaluation_runner import AzureMLEvaluationRunner
+from agentic_mlops.tools.pipeline_runner import AzureMLPipelineRunner
 from agentic_mlops.tools.report_writer import ReportWriter
 from agentic_mlops.tools.training_runner import AzureMLTrainingRunner
 
@@ -152,20 +156,34 @@ class OrchestratorWorkflow:
         *,
         mlflow_client: MLflowTrackingClientBase | None = None,
         mlflow_config: MLflowConfig | None = None,
+        artifact_store: ArtifactStore | None = None,
+        notification_client: NotificationClientBase | None = None,
     ) -> None:
         self.logger = get_logger(self.__class__.__name__)
         self._report_writer = ReportWriter()
         self._mlflow = mlflow_client
         self._mlflow_config = mlflow_config
+        self._artifact_store: ArtifactStore = artifact_store or NoOpArtifactStore()
+        self._notification_client = notification_client
         # Set fresh at the top of every run() call; read by _mlflow_kwargs()
         # so every _step_* method can inject tracking without threading an
         # extra parameter through all 11 of them.
         self._current_mlflow_run_id: str | None = None
+        # Resolved at the top of run() from injected client or inp.notifications.
+        self._notifier: NotificationClientBase | None = None
 
     def _mlflow_kwargs(self) -> dict[str, Any]:
         if not self._current_mlflow_run_id:
             return {}
         return {"mlflow_client": self._mlflow, "mlflow_run_id": self._current_mlflow_run_id}
+
+    def _notify(self, event_name: str, payload: dict) -> None:
+        if self._notifier is None:
+            return
+        try:
+            self._notifier.send(event_name, payload)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("Notification send failed: %s", exc)
 
     def _resolve_mlflow_run(self, state: dict) -> str | None:
         existing = state.get("mlflow_run_id")
@@ -239,6 +257,10 @@ class OrchestratorWorkflow:
                 "started_at": datetime.now(tz=UTC).isoformat(),
             }
             store.save_state(state)
+            # Persist original input so the web UI can reconstruct it for --resume.
+            (store.workflow_dir / "input.json").write_text(
+                inp.model_dump_json(indent=2), encoding="utf-8"
+            )
             store.append_audit(
                 {"event": "workflow_started", "workflow_id": inp.workflow_id, "steps": list(steps)}
             )
@@ -249,6 +271,16 @@ class OrchestratorWorkflow:
         step_status: dict[str, str] = state.get("step_status", {})
         all_artifacts: list[str] = list(state.get("artifacts", []))
         self._current_mlflow_run_id = self._resolve_mlflow_run(state)
+
+        if self._notification_client is not None:
+            self._notifier = self._notification_client
+        elif inp.notifications and inp.notifications.enabled:
+            from agentic_mlops.integrations.notification_client import (
+                WebhookNotificationClient,  # noqa: PLC0415
+            )
+            self._notifier = WebhookNotificationClient(inp.notifications)
+        else:
+            self._notifier = None
 
         azure_config: AzureMLConfig | None = None
         if inp.azure_config_path:
@@ -269,6 +301,7 @@ class OrchestratorWorkflow:
             state["status"] = OrchestratorStatus.RUNNING.value
             store.save_state(state)
             store.append_audit({"event": "step_started", "step": step})
+            self._notify("step_started", {"workflow_id": inp.workflow_id, "step": step})
 
             try:
                 outcome = self._dispatch(step, inp, output_root, step_outputs, azure_config)
@@ -276,6 +309,10 @@ class OrchestratorWorkflow:
                 tb = traceback.format_exc(limit=20)
                 store.append_audit(
                     {"event": "step_exception", "step": step, "error": str(exc), "traceback": tb}
+                )
+                self._notify(
+                    "step_failed",
+                    {"workflow_id": inp.workflow_id, "step": step, "error": str(exc)},
                 )
                 self._transition(state, f"{step.upper()}_FAILED", steps)
                 return self._finish(
@@ -302,12 +339,27 @@ class OrchestratorWorkflow:
                 }
             )
 
+            # Best-effort blob upload — happens regardless of outcome so partial
+            # artifacts are available for debugging even on failure.
+            step_dir = output_root / step
+            self._artifact_store.upload_directory(step_dir, f"{inp.workflow_id}/{step}")
+            self._artifact_store.upload_file(
+                store.workflow_dir / "state.json", f"{inp.workflow_id}/state.json"
+            )
+            self._artifact_store.upload_file(
+                store.workflow_dir / "audit_log.jsonl", f"{inp.workflow_id}/audit_log.jsonl"
+            )
+
             if not outcome.success:
                 terminal = (
                     OrchestratorStatus.BLOCKED if outcome.coarse == "blocked"
                     else OrchestratorStatus.FAILED
                 )
                 suffix = "BLOCKED" if terminal == OrchestratorStatus.BLOCKED else "FAILED"
+                self._notify(
+                    "step_failed",
+                    {"workflow_id": inp.workflow_id, "step": step, "errors": outcome.errors},
+                )
                 self._transition(state, f"{step.upper()}_{suffix}", steps)
                 return self._finish(
                     store, state, step_results, all_artifacts, terminal,
@@ -330,6 +382,14 @@ class OrchestratorWorkflow:
             state["completed_steps"] = completed
             self._transition(state, f"{step.upper()}_COMPLETED", steps)
             store.save_state(state)
+            self._notify(
+                "step_completed",
+                {
+                    "workflow_id": inp.workflow_id,
+                    "step": step,
+                    "status": outcome.status_label,
+                },
+            )
 
         self._transition(state, "COMPLETED", steps)
         return self._finish(
@@ -595,6 +655,16 @@ class OrchestratorWorkflow:
                 )
             azure_runner = AzureMLTrainingRunner(azure_config)
 
+        if inp.training_runner == "azure-ml-pipeline":
+            if azure_config is None:
+                return _StepOutcome(
+                    False, "FAILED",
+                    errors=[
+                        "azure_config_path is required when training_runner='azure-ml-pipeline'."
+                    ],
+                )
+            return self._step_training_pipeline(inp, output_root, step_outputs, azure_config, cfg)
+
         validation = step_outputs.get("dataset_validation")
         step_dir = output_root / "training"
         agent = TrainingAgent(
@@ -620,9 +690,72 @@ class OrchestratorWorkflow:
             },
         )
 
+    def _step_training_pipeline(
+        self,
+        inp: OrchestratorInput,
+        output_root: Path,
+        step_outputs: dict,
+        azure_config: AzureMLConfig,
+        cfg: TrainingConfig,
+    ) -> _StepOutcome:
+        """Submit a 2-step train+eval PipelineJob and store both outputs."""
+        from agentic_mlops.contracts.evaluation import (
+            EvaluationInput as _EvalInput,  # noqa: PLC0415
+        )
+
+        dataset_path, data_yaml_path = self._effective_dataset(step_outputs, inp)
+        validation = step_outputs.get("dataset_validation")
+        cfg.mode = TrainingMode.AZURE_PIPELINE
+
+        train_step_dir = output_root / "training"
+        eval_step_dir = output_root / "evaluation"
+        train_step_dir.mkdir(parents=True, exist_ok=True)
+        eval_step_dir.mkdir(parents=True, exist_ok=True)
+
+        training_inp = TrainingInput(
+            dataset_path=dataset_path,
+            data_yaml_path=data_yaml_path,
+            training_config=cfg,
+            dataset_validation_status=validation.get("status") if validation else None,
+        )
+        evaluation_inp = _EvalInput(
+            dataset_path=dataset_path,
+            data_yaml_path=data_yaml_path,
+            weights_path="pipeline",  # resolved internally by the pipeline DSL
+            mode=EvaluationMode.AZURE_PIPELINE_EVAL,
+            promotion_policy_path=inp.promotion_policy_path,
+            evaluation_config_path=inp.evaluation_config_path,
+        )
+
+        pipeline_runner = AzureMLPipelineRunner(azure_config)
+        train_out, eval_out = pipeline_runner.run(
+            training_inp, evaluation_inp, train_step_dir, eval_step_dir
+        )
+
+        # Store eval output path so _step_evaluation can pick it up without submitting a new job
+        eval_output_path = str(eval_step_dir / "evaluation_output.json")
+        train_out.pipeline_eval_output_path = eval_output_path
+
+        return _StepOutcome(
+            success=train_out.success,
+            status_label="COMPLETED" if train_out.success else "FAILED",
+            errors=train_out.errors,
+            artifacts=train_out.artifacts + eval_out.artifacts,
+            key_outputs={
+                "best_weights_path": train_out.best_weights_path,
+                "job_status": str(train_out.job_status),
+                "training_output_path": str(train_step_dir / "training_output.json"),
+                "pipeline_eval_output_path": eval_output_path,
+            },
+        )
+
     def _step_evaluation(
         self, inp: OrchestratorInput, output_root: Path, step_outputs: dict, azure_config
     ) -> _StepOutcome:
+        import json as _json  # noqa: PLC0415
+
+        from agentic_mlops.contracts.evaluation import EvaluationOutput as _EvalOut  # noqa: PLC0415
+
         training = step_outputs.get("training")
         if not training:
             return _StepOutcome(
@@ -631,6 +764,31 @@ class OrchestratorWorkflow:
             )
         if training.get("skipped"):
             return _skip("training was skipped")
+
+        # If training ran as an Azure ML pipeline, the eval output was already produced.
+        pipeline_eval_path = training.get("pipeline_eval_output_path")
+        if pipeline_eval_path:
+            p = Path(pipeline_eval_path)
+            if not p.exists():
+                return _StepOutcome(
+                    False, "FAILED",
+                    errors=[f"pipeline_eval_output_path not found on disk: {pipeline_eval_path}"],
+                )
+            eval_out = _EvalOut.model_validate(_json.loads(p.read_text(encoding="utf-8")))
+            return _StepOutcome(
+                success=eval_out.success,
+                status_label="COMPLETED" if eval_out.success else "FAILED",
+                errors=eval_out.errors,
+                artifacts=eval_out.artifacts,
+                key_outputs={
+                    "report_path": str(Path(pipeline_eval_path).parent / "evaluation_report.json"),
+                    "output_json_path": pipeline_eval_path,
+                    "recommendation": (
+                        str(eval_out.recommendation) if eval_out.recommendation else None
+                    ),
+                },
+            )
+
         dataset_path, data_yaml_path = self._effective_dataset(step_outputs, inp)
         weights_path = training.get("best_weights_path") or "dry_run"
 
@@ -1006,5 +1164,22 @@ class OrchestratorWorkflow:
                 self._mlflow.log_tags(mlflow_run_id, {"workflow_status": status.value})
                 final_status = "FINISHED" if status == OrchestratorStatus.COMPLETED else "FAILED"
                 self._mlflow.end_run(mlflow_run_id, status=final_status)
+
+        _WORKFLOW_EVENT: dict[OrchestratorStatus, str] = {
+            OrchestratorStatus.COMPLETED: "workflow_completed",
+            OrchestratorStatus.FAILED: "workflow_failed",
+            OrchestratorStatus.BLOCKED: "workflow_blocked",
+            OrchestratorStatus.PENDING_APPROVAL: "workflow_pending_approval",
+        }
+        wf_event = _WORKFLOW_EVENT.get(status)
+        if wf_event:
+            self._notify(
+                wf_event,
+                {
+                    "workflow_id": state.get("workflow_id", ""),
+                    "status": status.value,
+                    "message": message,
+                },
+            )
 
         return output

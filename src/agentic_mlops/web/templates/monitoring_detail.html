@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+{% block title %}{{ report.get('endpoint_name', 'Monitoring') }} — MLOps{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+
+{# ── Breadcrumb ─────────────────────────────────────────────────────────────── #}
+<div style="font-size:12px; color:var(--muted); margin-bottom:16px">
+  <a href="/monitoring" class="table-link">Monitoring</a>
+  &nbsp;/&nbsp; <a href="/workflows/{{ workflow_id }}" class="table-link">{{ workflow_id }}</a>
+  &nbsp;/&nbsp; {{ step }}
+</div>
+
+{# ── Page header ────────────────────────────────────────────────────────────── #}
+{% set action = report.get('recommended_action', 'no_action') %}
+<div class="page-header" style="margin-bottom:20px">
+  <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+    <h1 style="margin:0">{{ report.get('endpoint_name', 'unknown endpoint') }}</h1>
+    <span class="badge {{ status_class(report.get('status', '')) }}">{{ report.get('status', '—') }}</span>
+    {% if action != 'no_action' %}
+    <span class="badge {{ action_class(action) }}">{{ action.replace('_', ' ') }}</span>
+    {% endif %}
+    {% if report.get('requires_human_review') %}
+    <span class="badge badge-pending">human review required</span>
+    {% endif %}
+    {% if report.get('drift_detected') %}
+    <span class="badge badge-failed">drift detected</span>
+    {% endif %}
+  </div>
+  <div class="muted" style="margin-top:6px; font-size:13px">
+    Workflow: <a href="/workflows/{{ workflow_id }}" class="table-link">{{ workflow_id }}</a>
+    &nbsp;·&nbsp; Step: {{ step }}
+    &nbsp;·&nbsp; {{ fmt_dt(report.get('generated_at')) }}
+    {% if report.get('model_version') %}
+    &nbsp;·&nbsp; Model: {{ report.get('model_version') }}
+    {% endif %}
+  </div>
+  {% if report.get('window_start') or report.get('window_end') %}
+  <div class="muted" style="margin-top:3px; font-size:12px">
+    Window: {{ fmt_dt(report.get('window_start')) }} → {{ fmt_dt(report.get('window_end')) }}
+    {% if report.get('monitoring_window') %}&nbsp;({{ report.get('monitoring_window') }}){% endif %}
+  </div>
+  {% endif %}
+</div>
+
+{# ── Metric tiles ───────────────────────────────────────────────────────────── #}
+{% set metrics = report.get('metrics') or {} %}
+{% set hard_samples = report.get('hard_samples') or [] %}
+
+<div class="card" style="margin-bottom:16px">
+  <div class="card-title">Metrics</div>
+  <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); gap:16px 24px">
+
+    {% macro tile(label, val, unit='', warn=false, danger=false) %}
+    <div>
+      <div style="font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); margin-bottom:3px">{{ label }}</div>
+      <div style="font-size:22px; font-weight:700; color:{% if danger %}var(--red){% elif warn %}var(--orange){% else %}var(--text){% endif %}">
+        {% if val is not none %}{{ val }}{% if unit %}<span style="font-size:13px; font-weight:400; color:var(--muted)">{{ unit }}</span>{% endif %}{% else %}—{% endif %}
+      </div>
+    </div>
+    {% endmacro %}
+
+    {{ tile("Predictions", report.get('total_predictions')) }}
+    {{ tile("Hard Samples", hard_samples | length,
+            warn=(hard_samples | length) > 0,
+            danger=(hard_samples | length) > 20) }}
+
+    {% set avg_conf = metrics.get('avg_confidence') %}
+    {{ tile("Avg Confidence",
+            "%.3f" | format(avg_conf) if avg_conf is not none else none,
+            warn=avg_conf is not none and avg_conf < 0.5,
+            danger=avg_conf is not none and avg_conf < 0.3) }}
+
+    {% set p95 = metrics.get('p95_latency_ms') %}
+    {{ tile("p95 Latency",
+            "%.0f" | format(p95) if p95 is not none else none, "ms",
+            warn=p95 is not none and p95 > 150,
+            danger=p95 is not none and p95 > 200) }}
+
+    {% set err = metrics.get('error_rate') %}
+    {{ tile("Error Rate",
+            "%.2f%%" | format(err * 100) if err is not none else none,
+            warn=err is not none and err > 0.02,
+            danger=err is not none and err > 0.05) }}
+
+    {% set drift = metrics.get('drift_score') %}
+    {{ tile("Drift Score",
+            "%.3f" | format(drift) if drift is not none else none,
+            warn=drift is not none and drift > 0.15,
+            danger=drift is not none and drift > 0.30) }}
+
+  </div>
+</div>
+
+{# ── Triggered alerts ───────────────────────────────────────────────────────── #}
+{% set alerts = report.get('triggered_alerts') or [] %}
+{% set new_classes = report.get('new_classes_detected') or [] %}
+{% if alerts or new_classes %}
+<div class="card" style="margin-bottom:16px; border-left:3px solid var(--red)">
+  <div class="card-title">Triggered Alerts</div>
+  <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:4px">
+    {% for a in alerts %}
+    <span class="badge badge-failed">{{ a.replace('_', ' ') }}</span>
+    {% endfor %}
+    {% for c in new_classes %}
+    <span class="badge badge-blocked">new class: {{ c }}</span>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{# ── Class distribution chart ───────────────────────────────────────────────── #}
+{% set dist = report.get('class_distribution') or {} %}
+{% if dist %}
+<div class="card" style="margin-bottom:16px">
+  <div class="card-title">Class Distribution</div>
+  <div style="position:relative; height:220px">
+    <canvas id="distChart"></canvas>
+  </div>
+  {% set low_conf_ratio = metrics.get('low_confidence_ratio') %}
+  {% if low_conf_ratio is not none %}
+  <p class="muted" style="font-size:12px; margin-top:8px">
+    Low-confidence predictions: {{ "%.1f%%" | format(low_conf_ratio * 100) }}
+    {% if drift is not none %}
+    &nbsp;·&nbsp; Drift score: {{ "%.3f" | format(drift) }}
+    {% endif %}
+  </p>
+  {% endif %}
+  <script>
+  (function(){
+    const dist = {{ dist | tojson }};
+    const labels = Object.keys(dist);
+    const vals = labels.map(k => parseFloat((+dist[k]).toFixed(4)));
+    const colors = labels.map((_, i) => `hsla(${(i * 137) % 360},55%,55%,.80)`);
+    new Chart(document.getElementById('distChart'), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Proportion',
+          data: vals,
+          backgroundColor: colors,
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: 'Proportion', color: 'var(--muted)', font: { size: 11 } },
+          }
+        }
+      }
+    });
+  })();
+  </script>
+</div>
+{% endif %}
+
+{# ── Hard samples table ─────────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px">
+    <span>
+      Hard Samples
+      <span style="font-weight:400; font-size:13px; color:var(--muted)">({{ hard_samples | length }})</span>
+    </span>
+    {% if hard_samples %}
+    <input type="text" id="sampleSearch" placeholder="Filter by image ID…"
+           style="padding:5px 10px; border:1px solid var(--border); border-radius:var(--radius); font-size:13px; background:var(--bg); color:var(--text); width:220px"
+           oninput="filterSamples(this.value)">
+    {% endif %}
+  </div>
+
+  {% if hard_samples %}
+  <div style="overflow-x:auto; margin-top:4px">
+    <table style="width:100%; border-collapse:collapse; font-size:13px">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border)">
+          <th style="padding:8px 12px; text-align:left; color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.4px">Image ID</th>
+          <th style="padding:8px 12px; text-align:left; color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.4px">Timestamp</th>
+          <th style="padding:8px 12px; text-align:center; color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.4px">Detections</th>
+          <th style="padding:8px 12px; text-align:right; color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.4px">Min Confidence</th>
+          <th style="padding:8px 12px; text-align:left; color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.4px">Reason</th>
+        </tr>
+      </thead>
+      <tbody id="samplesBody">
+        {% for s in hard_samples %}
+        {% set conf = s.get('min_confidence') %}
+        <tr class="sample-row" data-id="{{ s.get('image_id', '') | lower }}"
+            style="border-bottom:1px solid var(--border)">
+          <td style="padding:8px 12px; font-family:monospace; font-size:12px; color:var(--accent)">
+            {{ s.get('image_id', '—') }}
+          </td>
+          <td style="padding:8px 12px; color:var(--muted)">{{ fmt_dt(s.get('timestamp')) }}</td>
+          <td style="padding:8px 12px; text-align:center">
+            {% set nd = s.get('num_detections', 0) %}
+            <span {% if nd == 0 %}style="color:var(--orange)"{% endif %}>{{ nd }}</span>
+          </td>
+          <td style="padding:8px 12px; text-align:right; font-weight:600;
+                     {% if conf is not none %}{% if conf < 0.3 %}color:var(--red){% elif conf < 0.5 %}color:var(--orange){% endif %}{% endif %}">
+            {{ "%.3f" | format(conf) if conf is not none else '—' }}
+          </td>
+          <td style="padding:8px 12px; color:var(--muted)">{{ s.get('reason', '—') }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div id="noResults" style="display:none; padding:16px 12px; color:var(--muted); font-size:13px">
+    No samples match the filter.
+  </div>
+
+  <script>
+  function filterSamples(q) {
+    const lq = q.trim().toLowerCase();
+    let visible = 0;
+    document.querySelectorAll('.sample-row').forEach(r => {
+      const show = !lq || r.dataset.id.includes(lq);
+      r.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    document.getElementById('noResults').style.display = visible ? 'none' : 'block';
+  }
+  </script>
+
+  {% else %}
+  <div class="empty-state" style="padding:32px 0">
+    <div class="empty-icon">✅</div>
+    <p>No hard samples detected in this monitoring window.</p>
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}
