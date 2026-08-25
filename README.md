@@ -1,50 +1,53 @@
-# Agentic MLOps — YOLO MVP
+# Agentic MLOps — YOLO
 
-Agentic MLOps workflow for YOLO object detection.
+Sequential multi-agent MLOps pipeline for YOLO object detection, from raw data to production deployment.
 
-**MVP scope:** Dataset Validation → Training → Evaluation → Human Approval → Model Registry.
-Each stage can run as a dry-run (`fake`), locally (`local-yolo`), or on Azure ML (`azure-ml`) —
-see [`CLAUDE.md`](CLAUDE.md) for the full architecture and every CLI command's options.
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![License MIT](https://img.shields.io/badge/license-MIT-green)
+[![CI](https://github.com/your-org/agentic-mlops-yolo/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/agentic-mlops-yolo/actions/workflows/ci.yml)
 
-## Quick start
+---
+
+## Overview
+
+Agentic MLOps — YOLO is a production-grade, configurable MLOps pipeline for YOLO object detection
+models. It implements 13 agents across the full ML lifecycle — data intake through production
+deployment — with 3 compute backends (`fake` / `local-yolo` / `azure-ml`), 3 registry backends
+(`local` / `mlflow` / `azure_ml`), a FastAPI web dashboard, and a complete Typer CLI. Every
+stage boundary is typed via Pydantic v2 contracts; agents orchestrate and report, while all
+deterministic computation lives in injected tools. The pipeline supports persistent state,
+audit logs, resume-after-pause, and automated webhook notifications on completion.
+
+---
+
+## Quick Start
 
 ```bash
-# Install in editable mode
 pip install -e ".[dev]"
 
-# Validate a YOLO dataset
-agentic-mlops validate-dataset /path/to/my_yolo_dataset
-
-# Override data.yaml location
-agentic-mlops validate-dataset /path/to/dataset --data-yaml /path/to/data.yaml
-
-# Save report to a custom directory
-agentic-mlops validate-dataset /path/to/dataset --output-dir ./reports
-
-# Treat warnings as errors
-agentic-mlops validate-dataset /path/to/dataset --fail-on-warnings
-
-# Run the full pipeline end-to-end in dry-run mode (no YOLO, no Azure, no MLflow needed)
+# Dry-run the full 5-step MVP pipeline (no YOLO, no Azure, no MLflow needed)
 agentic-mlops run-mvp \
-  --dataset-path /path/to/dataset --data-yaml /path/to/data.yaml \
+  --dataset-path /path/to/yolo_dataset \
+  --data-yaml /path/to/data.yaml \
   --training-config configs/training.example.yaml \
-  --output-dir ./runs/workflow_001 --dry-run --no-interactive
+  --output-dir ./runs/workflow_001 \
+  --dry-run --no-interactive
 ```
 
-## Dataset format
+Expected YOLO dataset layout:
 
 ```
 my_dataset/
   images/
-    train/   ← .jpg / .png images
+    train/    # .jpg / .png
     val/
   labels/
-    train/   ← YOLO .txt labels (one per image)
+    train/    # YOLO .txt — one per image
     val/
   data.yaml
 ```
 
-`data.yaml` example:
+`data.yaml` minimal example:
 
 ```yaml
 path: .
@@ -56,165 +59,320 @@ names:
   2: crack
 ```
 
-Each label line: `<class_id> <x_center> <y_center> <width> <height>` (all normalised to `[0, 1]`).
+---
 
-## Running tests
+## Full Pipeline
+
+The Orchestrator supports any ordered subset of the 11 canonical pipeline steps. The 5-step
+MVP default (`dataset_validation` → `training` → `evaluation` → `approval` → `model_registry`)
+is the same chain `run-mvp` runs; use `run-workflow` with a YAML config to enable any subset.
+
+| # | Step | Agent | Gate / Description |
+|---|---|---|---|
+| 1 | `data_intake` | `DataIntakeAgent` | Format, corruption, and duplicate checks on a raw image directory |
+| 2 | `dataset_structuring` | `DatasetStructuringAgent` | Converts raw images + YOLO/COCO/VOC labels into a split YOLO dataset |
+| 3 | `dataset_validation` | `DatasetValidationAgent` | Validates YOLO structure, bbox ranges, and cross-split duplicates |
+| 4 | `dataset_versioning` | `DatasetVersioningAgent` | Hash-deduplicating local registry or Azure ML Data asset registration |
+| 5 | `training_approval` | `TrainingApprovalAgent` | **H4 gate** — human approve/reject before training starts |
+| 6 | `training` | `TrainingAgent` | `fake` / `local-yolo` / `azure-ml` / `azure-ml-pipeline` |
+| 7 | `evaluation` | `EvaluationAgent` | Runs promotion policy; blocked if training failed |
+| 8 | `model_decision` | `ModelDecisionAgent` | Maps evaluation recommendation → promote/reject/retrain/need-more-data |
+| 9 | `approval` | `HumanApprovalAgent` | **H5 gate** — human model approval (interactive or non-interactive) |
+| 10 | `model_registry` | `ModelRegistryAgent` | 5-gate check → registers `best.pt` locally, MLflow, or Azure ML |
+| 11 | `deployment` | `DeploymentAgent` | ONNX/pt export + smoke test → local release, Docker/AKS, or Azure ML endpoint |
+
+Run the full configurable pipeline with a single YAML config:
 
 ```bash
-pytest tests/unit -v
+cp configs/orchestrator.example.yaml configs/orchestrator.yaml
+# Edit steps, runners, registry backends, notifications, etc.
+
+agentic-mlops run-workflow \
+  --workflow-id wf_001 \
+  --config configs/orchestrator.yaml \
+  --runs-dir runs
+
+# Resume after a human approval pause
+agentic-mlops run-workflow \
+  --workflow-id wf_001 \
+  --config configs/orchestrator.yaml \
+  --runs-dir runs --resume
+
+# With MLflow tracking (one parent run across the whole workflow)
+agentic-mlops run-workflow \
+  --workflow-id wf_001 \
+  --config configs/orchestrator.yaml \
+  --runs-dir runs \
+  --enable-mlflow --mlflow-config configs/mlflow.example.yaml
 ```
 
-## Project structure
+Each run writes `runs/<workflow_id>/state.json` (resumable snapshot) and
+`runs/<workflow_id>/audit_log.jsonl` (append-only event log). Pausing at an H4/H5 gate
+leaves the run open — re-run with `--resume` once the decision JSON exists on disk.
 
-```
-src/agentic_mlops/
-  agents/           ← orchestration layer (5 MVP agents + data-intake, structure-dataset, pseudo-label, label-qa, dataset-versioning, model-decision, deployment, monitoring, training-approval)
-  contracts/        ← Pydantic I/O models
-  tools/            ← dataset validator/structurer, YOLO trainer/evaluator, data intake scanner, pseudo-labeler, label QA checker, model decider, deployer, monitor, report writer, Azure ML Pipeline runner
-  integrations/     ← Azure ML client, Azure ML Online Endpoint deployer, MLflow tracking, model + dataset registry backends, workflow state store, Azure Blob artifact store, Application Insights log client, webhook notification client
-  azure_jobs/       ← entry scripts submitted to Azure ML (train_yolo.py, eval_yolo.py) + Online Endpoint scoring script (score.py)
-  workflows/        ← MVPWorkflow (5-step), OrchestratorWorkflow (full configurable pipeline), promotion policy
-  observability/    ← structured logging
-  web/              ← FastAPI web dashboard (`agentic-mlops serve`) — requires the `web` extra
-  cli/              ← Typer CLI
-tests/
-  unit/             ← 626 tests across all agents, tools, and integrations
-  conftest.py       ← shared fixtures
-configs/
-  training.example.yaml
-  promotion_policy.example.yaml
-  evaluation.example.yaml
-  mlflow.example.yaml
-  azure_ml.example.yaml
+---
+
+## Extras / Optional Dependencies
+
+| Extra | Install | When needed |
+|---|---|---|
+| `dev` | pytest, ruff, typer, pydantic, etc. | Local development and testing |
+| `mlflow` | `mlflow` | `--enable-mlflow`, `--backend mlflow` registry |
+| `azure` | `azure-ai-ml`, `azure-identity`, `azure-monitor-query` | Any `--runner azure-ml`, `--backend azure_ml`, App Insights log ingestion |
+| `vision` | `Pillow` | Real image corruption detection in `DataIntakeAgent` (falls back to non-zero-size check without it) |
+| `web` | `fastapi`, `uvicorn`, `jinja2` | `agentic-mlops serve` web dashboard |
+
+Install multiple extras together:
+
+```bash
+pip install -e ".[dev,azure,web]"
 ```
 
-## Commands
+---
+
+## CLI Reference
+
+Run `agentic-mlops <command> --help` for all flags. See [`CLAUDE.md`](CLAUDE.md) for worked
+examples and every runner/backend option.
+
+### Data Preparation
 
 | Command | Description |
 |---|---|
-| `data-intake` | Scan a raw image directory and write a dataset manifest (format/corruption/duplicate checks) — standalone, not part of `run-mvp` |
-| `structure-dataset` | Convert raw images (+ YOLO/COCO labels) into a split YOLO dataset with `data.yaml` — standalone, not part of `run-mvp` |
-| `pseudo-label` | Pre-label images with an approved YOLO model, routed into high/medium/low confidence buckets — standalone, not part of `run-mvp` |
-| `validate-dataset` | Validate a YOLO dataset locally — no Azure needed |
-| `label-qa` | Check label quality (suspicious bbox geometry, class imbalance, optional reference-model disagreement) — standalone, not part of `run-mvp` |
-| `version-dataset` | Register a clean, structured dataset as a new version with lineage (hash-deduplicated locally, or as a real Azure ML Data asset with `--backend azure_ml`) — standalone, not part of `run-mvp` |
-| `model-decision` | Turn an evaluation report into an explainable promote/reject/retrain/need-more-data/need-label-review decision — standalone, not part of `run-mvp` |
-| `deploy-model` | Export (ONNX/pt) + smoke-test + deploy a registered model to a local staging/production release — standalone, not part of `run-mvp` |
-| `monitor` | Analyze a predictions log for latency/error/confidence/drift issues and recommend an action — standalone, not part of `run-mvp` |
-| `approve-training` | H4 gate: review a dataset validation report and approve/reject starting training — standalone, not part of `run-mvp` |
-| `train` | Train a YOLO model: `fake` (dry-run plan) \| `local-yolo` (Ultralytics) \| `azure-ml` (Azure ML SDK v2) |
-| `evaluate` | Evaluate a model and apply the promotion policy: `fake` \| `local-yolo` \| `azure-ml` |
-| `approve` | Record a human approval decision (interactive or `--no-interactive --action ...`) |
-| `register-model` | Register an approved model: `--backend local` (default) \| `mlflow` \| `azure_ml` |
-| `run-mvp` | Chain all five agents end-to-end (validate → train → evaluate → approve → register) |
-| `run-workflow` | Run the full, configurable Orchestrator pipeline (any subset of 11 steps, config from one YAML file, persistent state + resume) |
-| `serve` | Start the web dashboard (workflow list/detail, H4/H5 approvals, model + dataset registry browsing, monitoring reports) — requires the `web` extra |
+| `agentic-mlops data-intake <raw_data_path> --dataset-name foo` | Scan raw images: format, corruption, SHA-256 duplicate checks; writes `dataset_manifest.json` |
+| `agentic-mlops structure-dataset <raw_data_path> --output-dataset-path ./out --classes a,b` | Convert raw images + labels (YOLO/COCO/VOC) into a split YOLO dataset |
+| `agentic-mlops pseudo-label <images_path> --model-path models/best.pt` | Run an approved YOLO model over unlabeled images; routes results into high/medium/low confidence buckets |
+| `agentic-mlops label-qa <dataset_path>` | Check bbox geometry, class imbalance, and optional reference-model disagreement |
 
-See `agentic-mlops <command> --help` for every flag, or [`CLAUDE.md`](CLAUDE.md) for a full
-architecture walkthrough with worked examples for each runner and backend.
+### Dataset Management
 
-## Azure ML Training
+| Command | Description |
+|---|---|
+| `agentic-mlops validate-dataset <dataset_path>` | Validate YOLO structure, labels, bbox ranges, cross-split duplicates |
+| `agentic-mlops version-dataset <dataset_path> --dataset-name foo` | Register a clean dataset version (local hash-dedup, or `--backend azure_ml` for Azure ML Data asset) |
 
-Submit YOLO training jobs to Azure ML (SDK v2) with full log streaming, output download, and lineage tracking.
+### Training & Evaluation
 
-### Installation
+| Command | Description |
+|---|---|
+| `agentic-mlops train --dataset-path ... --runner fake\|local-yolo\|azure-ml` | Train a YOLO model; `fake` writes a plan only |
+| `agentic-mlops evaluate --dataset-path ... --runner fake\|local-yolo\|azure-ml` | Evaluate and apply the promotion policy |
+| `agentic-mlops model-decision <evaluation_report.json>` | Map evaluation recommendation → explainable promote/reject/retrain decision |
+| `agentic-mlops approve --evaluation-output <path> --action approve_model --no-interactive` | Record H5 human approval (interactive by default) |
+| `agentic-mlops approve-training <dataset_quality_report.json> --action approve_training --no-interactive` | Record H4 training-start approval |
+| `agentic-mlops register-model --model-name foo --backend local\|mlflow\|azure_ml` | Register an approved model (5-gate check) |
+
+### Deployment
+
+| Command | Description |
+|---|---|
+| `agentic-mlops deploy-model <model.pt> --model-name foo --export-format onnx` | Export + smoke-test + release locally; add `--target production` for H6 gate |
+| `agentic-mlops deploy-model --model-name foo --backend azure_ml --azure-config configs/azure_ml.yaml` | Deploy to a real Azure ML Managed Online Endpoint |
+| `agentic-mlops deploy-model <model.pt> --model-name foo --backend docker --docker-config configs/docker.yaml` | Build a Docker image and push to a registry |
+| `agentic-mlops deploy-model <model.pt> --model-name foo --backend aks --docker-config ... --aks-config ...` | Deploy to AKS via `kubectl apply` |
+| `agentic-mlops monitor <predictions.jsonl> --endpoint-name foo` | Analyze inference logs for drift, latency, error rate; writes `hard_samples_manifest.json` |
+| `agentic-mlops ingest-hard-samples <manifest.json> --images-source-dir ... --dataset-name foo` | Stage hard samples and run data intake over them |
+| `agentic-mlops compare-models eval_a.json eval_b.json --model-names a,b` | Rank and compare multiple evaluation reports |
+
+### Pipelines
+
+| Command | Description |
+|---|---|
+| `agentic-mlops run-mvp --dataset-path ... --dry-run` | Fixed 5-step chain: validate → train → evaluate → approve → register |
+| `agentic-mlops run-workflow --workflow-id wf_001 --config configs/orchestrator.yaml` | Configurable 1–11 step pipeline with persistent state, audit log, and resume |
+
+### Web Dashboard
+
+| Command | Description |
+|---|---|
+| `agentic-mlops serve --port 8000 --runs-dir runs` | Start the FastAPI web dashboard (requires `[web]` extra) |
+
+### Operations
+
+| Command | Description |
+|---|---|
+| `agentic-mlops doctor` | System health self-check: packages, configs, dirs, optional tools (docker/az CLI) |
+| `agentic-mlops status` | Quick system-wide snapshot: active workflows, registered models, datasets, alerts |
+| `agentic-mlops show-state wf_001` | Drill-down view of a single workflow run state and steps |
+| `agentic-mlops diff-runs wf_001 wf_002` | Side-by-side comparison of two workflow run states and metrics |
+| `agentic-mlops cost-report wf_001 --runs-dir runs` | Estimate per-step compute costs for a workflow run |
+| `agentic-mlops prune-runs --keep-last 10` | Delete old workflow run directories |
+| `agentic-mlops tag-run wf_001 env=prod model=yolov8n` | Add, remove, or display tags on a workflow run |
+| `agentic-mlops lint-config configs/orchestrator.yaml` | Validate an orchestrator YAML without running anything |
+
+---
+
+## Azure ML Setup
 
 ```bash
-pip install -e ".[azure]"
-# or with dev + azure:
 pip install -e ".[dev,azure]"
-```
+az login   # or set service principal env vars:
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_CLIENT_SECRET
 
-### Prerequisites
-
-- Azure CLI: `az login` (or set service principal env vars `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_SECRET`)
-- An Azure ML workspace with a compute cluster
-- An Azure ML environment with `ultralytics` installed (e.g. `azureml:yolo-training-env:1`)
-
-### Configuration
-
-```bash
 cp configs/azure_ml.example.yaml configs/azure_ml.yaml
-# Fill in: subscription_id, resource_group, workspace_name, compute_name
+# Edit: subscription_id, resource_group, workspace_name, compute_name, environment_name
 ```
 
-### Running a job
+Run the full pipeline on Azure ML (training + evaluation + Azure ML registry + endpoint):
 
 ```bash
-agentic-mlops train \
-  --dataset-path /path/to/dataset \
-  --data-yaml /path/to/data.yaml \
-  --training-config configs/training.yaml \
-  --runner azure-ml \
-  --azure-config configs/azure_ml.yaml \
-  --output-dir ./runs/azure_run_001
+agentic-mlops run-workflow \
+  --workflow-id wf_azure_001 \
+  --config configs/orchestrator.yaml \
+  --runs-dir runs
 ```
 
-Expected output: `best.pt`, `last.pt`, `results.csv` downloaded to `--output-dir`, plus `azure_job_request.json` and `training_output.json` with Azure-specific fields (`azure_job_name`, `azure_studio_url`, etc.).
+Set `training_runner: azure-ml`, `evaluation_runner: azure-ml`, `registry_backend: azure_ml`,
+and `deployment_backend: azure_ml` in `configs/orchestrator.yaml`. The `azure_model_name` and
+`azure_model_version` are auto-chained from the `model_registry` step into `deployment` when
+using `azure_ml` for both — no need to set them twice.
 
-> **Cost note:** A single 1-epoch coco8 run on a Standard_NC6 GPU cluster takes approximately 15–30 minutes and costs roughly $0.50–$1.50 USD. Use `--runner fake` for dry runs.
+**Azure ML job scripts** (`azure_jobs/`) are self-contained (no `agentic_mlops` import) since
+only that directory is uploaded as the job's code snapshot:
+- `train_yolo.py` — Ultralytics training; outputs `best.pt`, `last.pt`, `results.csv`
+- `eval_yolo.py` — Ultralytics evaluation; outputs `metrics.json` + confusion-matrix/PR-curve plots
+- `score.py` — Online Endpoint scoring script
 
-### Azure Studio link
+**Optional combined pipeline job** (`azure-ml-pipeline` runner): submits a 2-step
+`PipelineJob` where the eval step receives `best.pt` directly from the training step's
+data flow — no intermediate download/re-upload between train and eval.
 
-After submission, the job URL appears in `training_output.json` as `azure_studio_url`.
+---
 
-### Integration test
-
-A lightweight, opt-in connectivity check — confirms your `azure_ml.yaml` +
-credentials can actually reach the configured workspace and compute target
-(read-only API calls, no compute spin-up, effectively free). Automatically
-skipped unless `--azure-config` is passed, so it never runs by accident as
-part of `pytest tests/unit`. It does **not** submit a real training job —
-that's the separate, manual, explicitly-costly step above (`train --runner
-azure-ml`).
+## Web Dashboard
 
 ```bash
+pip install -e ".[dev,web]"
+agentic-mlops serve --port 8000 --runs-dir runs \
+  --registry-dir outputs/model_registry \
+  --dataset-registry-dir outputs/dataset_registry
+
+# Optional HTTP basic auth:
+DASHBOARD_PASSWORD=secret agentic-mlops serve --user admin --port 8000
+```
+
+Dashboard features:
+- Workflow list with live SSE status updates
+- Per-workflow step accordion: inputs, outputs, artifacts, audit log
+- Inline H4/H5 approval forms (no CLI needed)
+- Model registry browser with promotion lineage
+- Dataset registry browser
+- Model comparison page
+- Per-workflow cost report
+- Hard sample viewer with ready-to-copy `ingest-hard-samples` command
+- Dark mode
+
+---
+
+## Annotation / Pseudo-labeling
+
+`AnnotationAgent` (`agents/annotation.py`) runs an approved YOLO model over unlabeled images
+and writes candidate labels to a `pseudo_labels/` directory — never merged into an existing
+dataset automatically (per the spec's safety rule: pseudo-labels require a review pass before
+becoming final).
+
+Confidence routing uses each image's weakest detection:
+
+- `min_confidence >= auto_candidate_threshold` → `high` (still sample-audited by a human)
+- `>= human_review_threshold` → `medium` (human review queue)
+- below → `low` (hard/expert review)
+
+```bash
+agentic-mlops pseudo-label /path/to/unlabeled_images \
+  --model-path models/approved/best.pt \
+  --auto-candidate-threshold 0.8 \
+  --existing-labels-path /path/to/human_labels  # skip already-labeled images
+```
+
+After review, feed accepted labels through `structure-dataset` → `version-dataset` →
+`run-workflow` for the next training iteration.
+
+---
+
+## Active Learning Loop
+
+The full feedback cycle is illustrated in `examples/active_learning_loop.py`:
+
+1. **Monitor** a live endpoint — `agentic-mlops monitor predictions.jsonl` finds low-confidence
+   and zero-detection images, writing `hard_samples_manifest.json`.
+2. **Ingest hard samples** — `agentic-mlops ingest-hard-samples manifest.json` stages the raw
+   images and runs `DataIntakeAgent` over them.
+3. **Structure and version** — `agentic-mlops structure-dataset` + `agentic-mlops version-dataset`
+   produce a new, clean dataset version with full lineage.
+4. **Retrain** — `agentic-mlops run-workflow` launches the next training iteration, optionally
+   chaining through all 11 pipeline steps including the H4 and H5 human gates.
+
+The web dashboard's monitoring detail page shows a ready-to-copy `ingest-hard-samples` command
+whenever hard samples are present in a run's monitoring report.
+
+---
+
+## Testing
+
+```bash
+# All unit tests (no Azure, no YOLO, no MLflow needed)
+pytest tests/unit -v                                               # ~1190 tests
+
+# Single test file
+pytest tests/unit/test_dataset_validator.py -v
+
+# With coverage
+pytest tests/unit --cov=agentic_mlops
+
+# Real Azure ML connectivity check (opt-in; auto-skipped without --azure-config)
 pip install -e ".[dev,azure]"
-az login   # or set AZURE_CLIENT_ID/AZURE_TENANT_ID/AZURE_CLIENT_SECRET
-pytest tests/integration -m azure_integration --azure-config configs/azure_ml.yaml
+az login
+pytest tests/integration -m azure_integration \
+  --azure-config configs/azure_ml.yaml
 ```
 
-## Azure ML Evaluation
+**Testing conventions:**
+- `conftest.py` exports plain helper functions (`make_valid_dataset`, `make_image`, `make_label`,
+  `make_data_yaml`) — not `@pytest.fixture`; tests call them directly with `tmp_path`.
+- Azure/MLflow calls use `FakeAzureMLClientFactory`, `FakeMLflowTrackingClient`,
+  `FakeModelRegistryClient`, `FakeNotificationClient` injected via constructor — no mock framework.
+- `MVPWorkflow` tests inject `_StubAgent` / `_RaisingAgent` factories.
+- CLI tests use `typer.testing.CliRunner`.
 
-Run YOLO evaluation on Azure ML compute the same way, using the same `azure_ml.yaml`:
+---
 
-```bash
-agentic-mlops evaluate \
-  --dataset-path /path/to/dataset \
-  --data-yaml /path/to/data.yaml \
-  --training-output ./runs/azure_run_001/training_output.json \
-  --runner azure-ml \
-  --azure-config configs/azure_ml.yaml \
-  --output-dir ./runs/azure_eval_001
-```
+## CI / CD
 
-Expected output: `metrics.json`-derived `evaluation_output.json`, confusion matrix / PR-curve
-plots downloaded to `--output-dir`, plus the same promotion-policy recommendation as `local-yolo`.
+**`ci.yml`** — triggered on every push and PR:
+- Lint with `ruff check` and `ruff format --check`
+- Unit test matrix on Python 3.11 and 3.12
+- Azure smoke gate (read-only workspace connectivity check, gated behind a secret)
 
-## Azure ML Serving
+**`mlops-deploy.yml`** — `workflow_dispatch` template dispatched automatically by
+`GithubActionsClient` when `OrchestratorWorkflow` reaches `COMPLETED`. Runs
+`agentic-mlops deploy-model` for the promoted model. Accepts `workflow_dispatch` inputs:
+`model_name`, `model_version`, `registry_backend` (`local` | `azure_ml`), and
+`target` (`staging` | `production`). Configure the trigger via `github_actions:` block in
+`configs/orchestrator.yaml`; set `GITHUB_ACTIONS_TOKEN` (PAT with `actions:write`) as an
+environment variable or in `GithubActionsConfig.token`.
 
-Deploy a registered model to a real Azure ML Managed Online Endpoint, using the same
-`azure_ml.yaml` (its `serving:` block controls instance type/count and auth mode):
+**`publish.yml`** — triggered on `v*` tags; publishes to PyPI via OIDC (no long-lived
+token stored in secrets).
 
-```bash
-agentic-mlops deploy-model --model-name my-model --backend azure_ml \
-  --azure-config configs/azure_ml.yaml \
-  --azure-model-name my-model --azure-model-version 3
-```
+---
 
-Requires the model to already be registered as an Azure ML Model asset (e.g. via
-`register-model --backend azure_ml`). Creates the endpoint if it doesn't exist,
-creates/updates the deployment (scoring script: `azure_jobs/score.py`), then routes
-100% traffic to it — no blue/green or canary rollout. The H6 production gate
-(`--rollback-plan` + `--production-approval`) applies the same way it does for
-`--backend local`.
+## Architecture
 
-## Extending
+The full agent and architecture specs live in `agentic_mlops_workflow_docs/`:
+- `agents/` — 13 markdown specs (00 Orchestrator + 01–12 individual agents)
+- `docs/` — 14 architecture docs (state machine, MVP scope, data contracts, etc.)
+- `prompts/` — Claude Code prompts used to bootstrap the project
 
-- Azure ML: see `src/agentic_mlops/integrations/azure_ml_client.py`, `src/agentic_mlops/tools/training_runner.py`, `src/agentic_mlops/tools/evaluation_runner.py`, `src/agentic_mlops/tools/pipeline_runner.py::AzureMLPipelineRunner`, `src/agentic_mlops/integrations/azure_ml_online_endpoint.py`, `src/agentic_mlops/integrations/dataset_registry.py::AzureMLDatasetRegistryClient`
-- Azure job scripts: `src/agentic_mlops/azure_jobs/train_yolo.py`, `src/agentic_mlops/azure_jobs/eval_yolo.py`, `src/agentic_mlops/azure_jobs/score.py`
-- MLflow: see `src/agentic_mlops/integrations/mlflow_client.py`, `src/agentic_mlops/integrations/model_registry.py::MLflowModelRegistryClient`
-- Artifact mirroring to Blob: `src/agentic_mlops/integrations/artifact_store.py::AzureBlobArtifactStore`
-- Monitoring log source: `src/agentic_mlops/integrations/appinsights_log_client.py::ApplicationInsightsLogClient`
-- Orchestrator notifications: `src/agentic_mlops/integrations/notification_client.py::WebhookNotificationClient`
-- Web dashboard: `src/agentic_mlops/web/` (`app.py` FastAPI factory, `routes.py`, `reader.py`)
+**Design principles:**
+- Agents orchestrate and report; all ML computation is in deterministic, injected tools.
+- Pydantic v2 contracts (`contracts/`) type every agent I/O boundary. `ToolResult` is the
+  shared output base (`success`, `message`, `artifacts`, `warnings`, `errors`, `metadata`).
+- `WorkflowStateStore` (`integrations/workflow_state_store.py`) writes `state.json` +
+  `audit_log.jsonl` per run — no networked state store, per the spec's MVP note.
+- `WorkflowState` StrEnum (14 states) in `contracts/common.py` governs legal transitions;
+  illegal transitions raise `RuntimeError` (internal consistency check).
+- All Azure ML integration uses SDK v2 (`azure-ai-ml`). Real Azure connections are always
+  explicit — there is no implicit fallback path from `azure_ml` to `local`.
+
+See [`CLAUDE.md`](CLAUDE.md) for the full architecture walkthrough with worked examples for
+every runner, backend, and integration.

@@ -219,6 +219,11 @@ agentic-mlops tag-run wf_001 --remove env
 # CLI: validate an orchestrator YAML without running anything
 agentic-mlops lint-config configs/orchestrator.yaml
 agentic-mlops lint-config configs/orchestrator.yaml --strict
+
+# CLI: tail a workflow's audit log live (Ctrl-C to stop; exits 0=completed, 1=failed, 2=not found)
+agentic-mlops watch wf_001
+agentic-mlops watch wf_001 --runs-dir runs --interval 0.5
+agentic-mlops watch wf_001 --follow  # keep tailing after terminal state
 ```
 
 `.github/workflows/mlops-deploy.yml` is a starter GitHub Actions template that is
