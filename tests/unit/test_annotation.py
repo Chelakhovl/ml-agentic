@@ -310,9 +310,7 @@ def test_agent_writes_report_files(tmp_path: Path) -> None:
     model = _FakeModel(default_dets=[(0, 0.5, 0.5, 0.2, 0.2, 0.95)])
     artifacts_dir = tmp_path / "artifacts"
 
-    with patch(
-        "agentic_mlops.tools.pseudo_labeler._import_yolo", return_value=lambda path: model
-    ):
+    with patch("agentic_mlops.tools.pseudo_labeler._import_yolo", return_value=lambda path: model):
         agent = AnnotationAgent(artifacts_dir=artifacts_dir)
         result = agent.run(AnnotationInput(images_path=str(images_dir), model_path="fake.pt"))
 
@@ -332,9 +330,7 @@ def test_agent_logs_to_mlflow_when_enabled(tmp_path: Path) -> None:
     client = FakeMLflowClient()
     run_id = client.start_run("exp", "run")
 
-    with patch(
-        "agentic_mlops.tools.pseudo_labeler._import_yolo", return_value=lambda path: model
-    ):
+    with patch("agentic_mlops.tools.pseudo_labeler._import_yolo", return_value=lambda path: model):
         agent = AnnotationAgent(
             artifacts_dir=tmp_path / "artifacts", mlflow_client=client, mlflow_run_id=run_id
         )
@@ -359,9 +355,7 @@ def test_cli_pseudo_label_succeeds(tmp_path: Path) -> None:
     _make_images(images_dir, ["a.jpg"])
     model = _FakeModel(default_dets=[(0, 0.5, 0.5, 0.2, 0.2, 0.95)])
 
-    with patch(
-        "agentic_mlops.tools.pseudo_labeler._import_yolo", return_value=lambda path: model
-    ):
+    with patch("agentic_mlops.tools.pseudo_labeler._import_yolo", return_value=lambda path: model):
         result = CliRunner().invoke(
             app, ["pseudo-label", str(images_dir), "--model-path", "fake.pt"]
         )

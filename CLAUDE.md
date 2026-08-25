@@ -76,6 +76,27 @@ agentic-mlops deploy-model --model-name my-model --backend azure_ml \
 agentic-mlops monitor ./logs/predictions.jsonl --endpoint-name factory-defects-prod \
   --baseline-class-distribution ./baseline/class_distribution.json --critical-classes crack
 
+# CLI: stage hard samples found by the monitor and run data intake over them (standalone)
+agentic-mlops ingest-hard-samples ./logs/hard_samples_manifest.json \
+  --images-source-dir /path/to/original_images --dataset-name factory_defects_hard
+
+# CLI: rank and compare multiple evaluation reports to pick the best model (standalone)
+agentic-mlops compare-models \
+  ./runs/eval_a/evaluation_report.json \
+  ./runs/eval_b/evaluation_report.json \
+  --model-names model_a,model_b \
+  --output-dir ./runs/comparison
+
+# CLI: deploy to Docker image + push to registry (requires --docker-config)
+agentic-mlops deploy-model outputs/model_registry/my-model/versions/1/model/best.pt \
+  --model-name my-model --backend docker \
+  --docker-config configs/docker.yaml
+
+# CLI: deploy to AKS via kubectl apply (requires --docker-config + --aks-config)
+agentic-mlops deploy-model outputs/model_registry/my-model/versions/1/model/best.pt \
+  --model-name my-model --backend aks \
+  --docker-config configs/docker.yaml --aks-config configs/aks.yaml
+
 # CLI: H4 gate — approve/reject starting training on a validated dataset
 agentic-mlops approve-training ./runs/workflow_001/dataset_quality_report.json \
   --no-interactive --action approve_training --approver jane.doe
@@ -165,7 +186,49 @@ agentic-mlops run-workflow \
 # CLI: start the web dashboard (requires the 'web' extra)
 agentic-mlops serve --port 8000 --runs-dir runs \
   --registry-dir outputs/model_registry --dataset-registry-dir outputs/dataset_registry
+
+# CLI: system health self-check (packages, configs, dirs, optional tools)
+agentic-mlops doctor
+agentic-mlops doctor --config configs/orchestrator.yaml --azure-config configs/azure_ml.yaml
+agentic-mlops doctor --no-tools  # skip docker/az CLI checks
+
+# CLI: quick system-wide health snapshot (workflows, models, datasets, alerts)
+agentic-mlops status
+agentic-mlops status --runs-dir runs --registry-dir outputs/model_registry --limit 10
+
+# CLI: estimate compute costs for a workflow run
+agentic-mlops cost-report wf_001 --runs-dir runs
+agentic-mlops cost-report wf_001 --pricing-config configs/pricing.yaml --output-file cost.json
+
+# CLI: drill-down view of a single workflow run state + steps
+agentic-mlops show-state wf_001
+agentic-mlops show-state wf_001 --audit --audit-lines 20
+
+# CLI: compare two workflow run states side by side (metrics, step statuses)
+agentic-mlops diff-runs wf_001 wf_002
+
+# CLI: delete old workflow run directories
+agentic-mlops prune-runs --keep-last 10 --runs-dir runs
+agentic-mlops prune-runs --older-than-days 30 --status failed --dry-run
+
+# CLI: add, remove, or display arbitrary tags on a workflow run
+agentic-mlops tag-run wf_001
+agentic-mlops tag-run wf_001 env=prod model=yolov8n
+agentic-mlops tag-run wf_001 --remove env
+
+# CLI: validate an orchestrator YAML without running anything
+agentic-mlops lint-config configs/orchestrator.yaml
+agentic-mlops lint-config configs/orchestrator.yaml --strict
 ```
+
+`.github/workflows/mlops-deploy.yml` is a starter GitHub Actions template that is
+dispatched automatically by `GithubActionsClient` when `OrchestratorWorkflow` reaches
+`COMPLETED`. It runs `agentic-mlops deploy-model` for the promoted model. Accepts
+`workflow_dispatch` inputs: `model_name`, `model_version`, `registry_backend`
+(`local`|`azure_ml`), and `target` (`staging`|`production`). Configure via
+`github_actions:` block in `configs/orchestrator.yaml` (see
+`configs/orchestrator.example.yaml`) and set `GITHUB_ACTIONS_TOKEN` (PAT with
+`actions:write`) as an environment variable or in `GithubActionsConfig.token`.
 
 Copy `configs/training.example.yaml`, `configs/promotion_policy.example.yaml`,
 `configs/mlflow.example.yaml`, `configs/azure_ml.example.yaml`, and
@@ -608,18 +671,17 @@ one level up.
 
 ### What is not yet implemented
 
-As of 2026-07-20, all 5 MVP agents are fully implemented and tested, including every
+As of 2026-08-25, all 5 MVP agents are fully implemented and tested, including every
 runner variant: `fake`/`local-yolo`/`azure-ml`/`azure-ml-pipeline` for training and evaluation, and
 `local`/`mlflow`/`azure_ml` for model registry (see
 `agentic_mlops_workflow_docs/docs/13_backlog.md` for the authoritative, actively-maintained
-status of every planned item). Still missing:
+status of every planned item). Nothing is known to be missing at this time.
 
-- VOC label format for Dataset Structuring (`LabelFormat` only has `yolo`/`coco`)
-- Docker image build, AKS, and a CI/CD trigger for `DeploymentAgent` — Azure ML Managed Online Endpoint (real serving) is implemented (see above); these three remain out of scope, not started
-- Hard samples from `MonitoringAgent` are surfaced in a manifest for manual triage but not automatically fed back into Data Intake
+- VOC label format for Dataset Structuring — implemented: `_load_voc_source()` in `tools/dataset_structurer.py`, `--label-format voc --voc-annotations-dir` CLI flags, 4 unit tests
+- Hard sample feedback loop is implemented via `HardSampleIngestionAgent` (`agents/hard_sample_ingestion.py`, `tools/hard_sample_ingester.py`, `contracts/hard_sample_ingestion.py`): reads `hard_samples_manifest.json` from `MonitoringAgent`, stages found images into `hard_samples_staging/`, then runs `DataIntakeAgent` over that directory. CLI: `agentic-mlops ingest-hard-samples <manifest_path> --images-source-dir ... --dataset-name ...`. The monitoring detail page in the web dashboard shows a ready-to-copy CLI command when hard samples are present.
 - All 8 originally-unimplemented agents (`LabelQAAgent`, `DataIntakeAgent`, `DatasetStructuringAgent`, `AnnotationAgent`, `DatasetVersioningAgent`, `ModelDecisionAgent`, `DeploymentAgent`, `MonitoringAgent`) **and** the top-level Orchestrator Agent (`OrchestratorWorkflow`, see "Orchestrator" above) are now implemented — every spec in `agentic_mlops_workflow_docs/agents/` has a corresponding implementation.
 
-Previously listed as missing but now implemented: `AzureMLPipelineRunner` (combined train+eval PipelineJob), `AzureBlobArtifactStore` (artifact mirroring to blob), `ApplicationInsightsLogClient` (App Insights log ingestion for monitoring), `WebhookNotificationClient` (Teams/Slack notifications for Orchestrator), web dashboard (`agentic-mlops serve`).
+Previously listed as missing but now implemented: `AzureMLPipelineRunner` (combined train+eval PipelineJob), `AzureBlobArtifactStore` (artifact mirroring to blob), `ApplicationInsightsLogClient` (App Insights log ingestion for monitoring), `WebhookNotificationClient` (Teams/Slack/email notifications for Orchestrator), web dashboard (`agentic-mlops serve`), Docker image build + push (`DeploymentBackend.DOCKER` via `DockerClient`/`DockerConfig` — CLI `deploy-model --backend docker --docker-config ...`), AKS deployment via `kubectl apply` (`DeploymentBackend.AKS` via `AksClient`/`AksConfig` — CLI `deploy-model --backend aks --docker-config ... --aks-config ...`), GitHub Actions CI/CD trigger (`GithubActionsClient` dispatches `workflow_dispatch` on pipeline completion — configure via `github_actions:` block in `configs/orchestrator.yaml`, see `configs/orchestrator.example.yaml`), `ModelComparisonAgent` with ranked multi-model comparison (`agentic-mlops compare-models`), `BaselineComparator` + auto-baseline resolution (`BaselineResolver`) + `ModelRiskScorer` injected into `OrchestratorWorkflow` and run automatically after evaluation/model_registry steps, `CostTracker` injected into `OrchestratorWorkflow` for per-step USD cost tracking.
 
 Note: `agentic_mlops_workflow_docs/docs/` and `agentic_mlops_workflow_docs/agents/` are
 design specs frozen at the project-bootstrap stage — they describe the full target

@@ -74,6 +74,7 @@ def _minimal_azure_config(**overrides: object) -> AzureMLConfig:
     defaults.update(overrides)
     return AzureMLConfig.model_validate(defaults)
 
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
@@ -166,7 +167,10 @@ def test_resume_completes_without_rerunning_earlier_steps(tmp_path: Path) -> Non
     result = wf.run(resumed)
     assert result.status == OrchestratorStatus.COMPLETED
     assert [s.step for s in result.steps] == [
-        "dataset_validation", "training", "evaluation", "approval"
+        "dataset_validation",
+        "training",
+        "evaluation",
+        "approval",
     ]
 
     audit_after = store.audit_log_path.read_text(encoding="utf-8").count('"step_started"')
@@ -325,9 +329,7 @@ def test_data_intake_without_raw_data_path_fails_clearly(tmp_path: Path) -> None
 
 
 def test_training_without_config_path_fails_clearly(tmp_path: Path) -> None:
-    inp = _base_input(
-        tmp_path, steps=["dataset_validation", "training"], training_config_path=None
-    )
+    inp = _base_input(tmp_path, steps=["dataset_validation", "training"], training_config_path=None)
     result = OrchestratorWorkflow().run(inp)
     assert result.status == OrchestratorStatus.FAILED
     train_step = next(s for s in result.steps if s.step == "training")
@@ -422,9 +424,12 @@ def test_cli_run_workflow_pauses_at_approval(tmp_path: Path) -> None:
         app,
         [
             "run-workflow",
-            "--workflow-id", "wf_cli_test",
-            "--config", str(cfg_path),
-            "--runs-dir", str(tmp_path / "runs"),
+            "--workflow-id",
+            "wf_cli_test",
+            "--config",
+            str(cfg_path),
+            "--runs-dir",
+            str(tmp_path / "runs"),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -440,9 +445,12 @@ def test_cli_run_workflow_exits_1_on_bad_config(tmp_path: Path) -> None:
         app,
         [
             "run-workflow",
-            "--workflow-id", "wf_cli_bad",
-            "--config", str(tmp_path / "nope.yaml"),
-            "--runs-dir", str(tmp_path / "runs"),
+            "--workflow-id",
+            "wf_cli_bad",
+            "--config",
+            str(tmp_path / "nope.yaml"),
+            "--runs-dir",
+            str(tmp_path / "runs"),
         ],
     )
     assert result.exit_code == 1
@@ -467,9 +475,12 @@ def test_cli_run_workflow_exits_1_without_resume_on_rerun(tmp_path: Path) -> Non
     )
     args = [
         "run-workflow",
-        "--workflow-id", "wf_cli_rerun",
-        "--config", str(cfg_path),
-        "--runs-dir", str(tmp_path / "runs"),
+        "--workflow-id",
+        "wf_cli_rerun",
+        "--config",
+        str(cfg_path),
+        "--runs-dir",
+        str(tmp_path / "runs"),
     ]
     runner = CliRunner()
     first = runner.invoke(app, args)
@@ -538,15 +549,9 @@ def test_h4_requires_dataset_validation_first(tmp_path: Path) -> None:
 def test_is_legal_recognizes_training_approval_pause() -> None:
     wf = OrchestratorWorkflow()
     steps = ["dataset_validation", "training_approval", "training"]
-    assert wf._is_legal(
-        "TRAINING_APPROVAL_RUNNING", "TRAINING_APPROVAL_REQUIRED", steps
-    ) is True
-    assert wf._is_legal(
-        "TRAINING_APPROVAL_REQUIRED", "TRAINING_APPROVAL_RUNNING", steps
-    ) is True
-    assert wf._is_legal(
-        "TRAINING_APPROVAL_RUNNING", "TRAINING_APPROVAL_COMPLETED", steps
-    ) is True
+    assert wf._is_legal("TRAINING_APPROVAL_RUNNING", "TRAINING_APPROVAL_REQUIRED", steps) is True
+    assert wf._is_legal("TRAINING_APPROVAL_REQUIRED", "TRAINING_APPROVAL_RUNNING", steps) is True
+    assert wf._is_legal("TRAINING_APPROVAL_RUNNING", "TRAINING_APPROVAL_COMPLETED", steps) is True
     assert wf._is_legal("TRAINING_APPROVAL_REQUIRED", "TRAINING_RUNNING", steps) is False
 
 
@@ -563,13 +568,17 @@ def test_azure_ml_deployment_uses_explicit_model_name_version(tmp_path: Path) ->
         azure_model_version=5,
     )
     fake_output = DeploymentOutput(
-        success=True, message="ok", status=DeploymentStatus.DEPLOYED_TO_STAGING,
+        success=True,
+        message="ok",
+        status=DeploymentStatus.DEPLOYED_TO_STAGING,
         endpoint_name="yolo-model-staging",
     )
     with patch("agentic_mlops.workflows.orchestrator.AzureMLOnlineEndpointDeployer") as MockDep:
         MockDep.return_value.deploy.return_value = fake_output
         outcome = wf._step_deployment(
-            inp, tmp_path / "artifacts", {"approval": {"approved": True}},
+            inp,
+            tmp_path / "artifacts",
+            {"approval": {"approved": True}},
             _minimal_azure_config(),
         )
 
@@ -610,7 +619,8 @@ def test_azure_ml_deployment_requires_azure_config(tmp_path: Path) -> None:
     inp = _base_input(
         tmp_path,
         deployment_backend=DeploymentBackend.AZURE_ML,
-        azure_model_name="m", azure_model_version=1,
+        azure_model_name="m",
+        azure_model_version=1,
     )
     outcome = wf._step_deployment(
         inp, tmp_path / "artifacts", {"approval": {"approved": True}}, None
@@ -648,8 +658,11 @@ def test_dataset_registry_azure_ml_registers_via_client(tmp_path: Path) -> None:
         )
 
         MockClient.return_value.register.return_value = DatasetVersioningOutput(
-            success=True, message="ok", status=DatasetVersionStatus.REGISTERED,
-            dataset_name="wf_test", version=1,
+            success=True,
+            message="ok",
+            status=DatasetVersionStatus.REGISTERED,
+            dataset_name="wf_test",
+            version=1,
         )
         outcome = wf._step_dataset_versioning(
             inp, tmp_path / "artifacts", {}, _minimal_azure_config()

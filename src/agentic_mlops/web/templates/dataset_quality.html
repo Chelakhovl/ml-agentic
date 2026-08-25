@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}{{ dataset_name }} — Quality Dashboard{% endblock %}
+
+{% block scripts %}
+{% if versions | length > 1 %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script>
+(function() {
+  const versions = {{ versions | tojson }};
+  // oldest → newest for time-axis readability
+  const asc = [...versions].reverse();
+  const vLabels = asc.map(v => 'v' + v.version);
+
+  // ── 1. Images & Labels trend ────────────────────────────────────────────────
+  new Chart(document.getElementById('trendChart'), {
+    type: 'line',
+    data: {
+      labels: vLabels,
+      datasets: [
+        {
+          label: 'Images',
+          data: asc.map(v => v.num_images),
+          borderColor: '#0071e3',
+          backgroundColor: 'rgba(0,113,227,.1)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 5,
+        },
+        {
+          label: 'Labels',
+          data: asc.map(v => v.num_labels),
+          borderColor: '#34c759',
+          backgroundColor: 'rgba(52,199,89,.1)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 5,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { position: 'bottom' } },
+      scales: { y: { beginAtZero: true, title: { display: true, text: 'Count' } } }
+    }
+  });
+
+  // ── 2. Issues trend ─────────────────────────────────────────────────────────
+  new Chart(document.getElementById('issuesChart'), {
+    type: 'bar',
+    data: {
+      labels: vLabels,
+      datasets: [
+        {
+          label: 'Blocking issues',
+          data: asc.map(v => v.blocking_issues_count || 0),
+          backgroundColor: 'rgba(255,59,48,.7)',
+          borderRadius: 4,
+        },
+        {
+          label: 'Label issues',
+          data: asc.map(v => v.label_issues_count || 0),
+          backgroundColor: 'rgba(255,149,0,.7)',
+          borderRadius: 4,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { position: 'bottom' } },
+      scales: { y: { beginAtZero: true, title: { display: true, text: 'Count' } } }
+    }
+  });
+
+  // ── 3. Class distribution across versions (stacked bar) ─────────────────────
+  // Collect all class names
+  const allClasses = [...new Set(versions.flatMap(v => Object.keys(v.class_distribution || {})))].sort();
+  if (allClasses.length) {
+    const palette = [
+      '#0071e3','#34c759','#ff9500','#ff3b30','#af52de',
+      '#5ac8fa','#ffcc02','#ff2d55','#4cd964','#007aff',
+    ];
+    new Chart(document.getElementById('classChart'), {
+      type: 'bar',
+      data: {
+        labels: vLabels,
+        datasets: allClasses.map((cls, i) => ({
+          label: cls,
+          data: asc.map(v => (v.class_distribution || {})[cls] || 0),
+          backgroundColor: palette[i % palette.length],
+          borderRadius: 3,
+        })),
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { position: 'bottom' } },
+        scales: {
+          x: { stacked: true },
+          y: { stacked: true, beginAtZero: true, title: { display: true, text: 'Labels' } }
+        }
+      }
+    });
+  }
+})();
+</script>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>{{ dataset_name }} — Quality</h1>
+  <p>
+    <a href="/datasets/{{ dataset_name }}" class="table-link">← Version history</a>
+    &nbsp;·&nbsp; {{ versions | length }} version(s) tracked
+  </p>
+</div>
+
+{% if not versions %}
+<div class="card"><p class="muted">No versions found for this dataset.</p></div>
+{% else %}
+
+{# ── Latest version summary cards ─────────────────────────────────────────── #}
+{% set latest = versions[0] %}
+<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px,1fr)); gap:14px; margin-bottom:24px">
+
+  {% macro stat_card(label, value, ok=none) %}
+  <div class="card" style="padding:16px 18px; text-align:center">
+    <div style="font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin-bottom:6px">{{ label }}</div>
+    {% if ok is none %}
+    <div style="font-size:22px; font-weight:700; font-family:monospace">{{ value if value is not none else "—" }}</div>
+    {% elif ok %}
+    <div style="font-size:22px; font-weight:700; color:var(--green)">{{ value if value is not none else "—" }}</div>
+    {% else %}
+    <div style="font-size:22px; font-weight:700; color:var(--red)">{{ value if value is not none else "—" }}</div>
+    {% endif %}
+  </div>
+  {% endmacro %}
+
+  {{ stat_card("Latest version", "v" ~ latest.version) }}
+  {{ stat_card("Images", latest.num_images) }}
+  {{ stat_card("Labels", latest.num_labels) }}
+  {{ stat_card("Classes", latest.classes | length) }}
+  {{ stat_card("Blocking issues", latest.blocking_issues_count,
+               ok=(latest.blocking_issues_count == 0)) }}
+  {{ stat_card("Label issues", latest.label_issues_count,
+               ok=(latest.label_issues_count == 0)) }}
+
+</div>
+
+{# ── Charts (shown only when >1 version — otherwise static bars below suffice) #}
+{% if versions | length > 1 %}
+<div class="two-col" style="margin-bottom:24px">
+  <div class="card">
+    <div class="card-title">Images &amp; Labels over versions</div>
+    <canvas id="trendChart" style="max-height:220px"></canvas>
+  </div>
+  <div class="card">
+    <div class="card-title">Issues over versions</div>
+    <canvas id="issuesChart" style="max-height:220px"></canvas>
+  </div>
+</div>
+{% if latest.class_distribution %}
+<div class="card" style="margin-bottom:24px">
+  <div class="card-title">Class distribution across versions</div>
+  <canvas id="classChart" style="max-height:240px"></canvas>
+</div>
+{% endif %}
+{% endif %}
+
+{# ── Class distribution bar chart (latest version — shown only when 1 version) #}
+{% if versions | length == 1 and latest.class_distribution %}
+<div class="card" style="margin-bottom:24px">
+  <div class="card-title">Class distribution — v{{ latest.version }}</div>
+  {% set total = latest.class_distribution.values() | sum %}
+  {% set max_count = latest.class_distribution.values() | max %}
+  <div style="display:grid; grid-template-columns: max-content 1fr max-content; gap:6px 12px; align-items:center; margin-top:10px">
+    {% for cls, count in latest.class_distribution.items() | sort(attribute=1, reverse=true) %}
+    <span style="font-size:13px; white-space:nowrap">{{ cls }}</span>
+    <div style="background:var(--bg); border-radius:4px; overflow:hidden; height:18px">
+      <div style="background:var(--accent); height:100%; width:{{ ((count / max_count) * 100) | round(1) }}%; border-radius:4px; transition:width .3s"></div>
+    </div>
+    <span class="mono" style="font-size:12px; color:var(--muted); white-space:nowrap">
+      {{ count }}{% if total > 0 %} &nbsp;({{ ((count / total) * 100) | round(1) }}%){% endif %}
+    </span>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{# ── Version history table ─────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-title">Version history</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Version</th>
+        <th>Registered</th>
+        <th>Images</th>
+        <th>Labels</th>
+        <th>Blocking</th>
+        <th>Label issues</th>
+        <th>Validation</th>
+        <th>Label QA</th>
+        <th>Classes</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for v in versions %}
+    <tr>
+      <td><a href="/datasets/{{ dataset_name }}" class="table-link">v{{ v.version }}</a></td>
+      <td class="muted" style="font-size:12px; white-space:nowrap">{{ fmt_dt(v.registered_at) }}</td>
+      <td class="mono">{{ v.num_images if v.num_images is not none else "—" }}</td>
+      <td class="mono">{{ v.num_labels if v.num_labels is not none else "—" }}</td>
+      <td class="mono" style="color:{{ 'var(--red)' if v.blocking_issues_count else 'var(--green)' }}">
+        {{ v.blocking_issues_count }}
+      </td>
+      <td class="mono" style="color:{{ 'var(--yellow)' if v.label_issues_count else 'var(--green)' }}">
+        {{ v.label_issues_count }}
+      </td>
+      <td>
+        {% if v.validation_status %}
+        <span class="badge badge-{{ 'ok' if v.validation_status == 'passed' else 'warn' if v.validation_status == 'warning' else 'err' }}">
+          {{ v.validation_status }}
+        </span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td>
+        {% if v.label_qa_status %}
+        <span class="badge badge-{{ 'ok' if v.label_qa_status == 'passed' else 'warn' if v.label_qa_status == 'review_required' else 'err' }}">
+          {{ v.label_qa_status }}
+        </span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td style="font-size:12px">
+        {% if v.classes %}{{ v.classes | join(", ") }}{% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td>
+        {% if not loop.last %}
+        {% set prev = versions[loop.index] %}
+        <a href="/datasets/{{ dataset_name }}/diff?v1={{ prev.version }}&v2={{ v.version }}"
+           class="table-link" style="font-size:12px; white-space:nowrap">Diff →</a>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endif %}
+{% endblock %}

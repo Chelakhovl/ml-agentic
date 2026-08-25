@@ -16,6 +16,7 @@ import json
 import random
 import re
 import shutil
+import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,6 +64,18 @@ class DatasetStructurer:
                 records, warnings = _load_coco_source(raw_dir, coco_path, inp.classes)
             except Exception as exc:
                 return _failed(f"Failed to parse COCO annotations: {exc}")
+        elif inp.label_format == LabelFormat.VOC:
+            if inp.voc_annotations_dir:
+                voc_dir = Path(inp.voc_annotations_dir).resolve()
+                if not voc_dir.is_dir():
+                    return _failed(f"voc_annotations_dir not found: {voc_dir}")
+            else:
+                # Convention: Annotations/ subdir first, then root of raw_data_path.
+                voc_dir = raw_dir / "Annotations" if (raw_dir / "Annotations").is_dir() else raw_dir
+            try:
+                records, warnings = _load_voc_source(raw_dir, voc_dir, inp.classes)
+            except Exception as exc:
+                return _failed(f"Failed to parse VOC annotations: {exc}")
         else:
             return _failed(f"Unsupported label_format: {inp.label_format}")
 
@@ -95,8 +108,7 @@ class DatasetStructurer:
         return DatasetStructuringOutput(
             success=True,
             message=(
-                f"Structured {len(records)} image(s) into {split_counts} "
-                f"under {out_dir}."
+                f"Structured {len(records)} image(s) into {split_counts} " f"under {out_dir}."
             ),
             structured_dataset_path=str(out_dir),
             data_yaml_path=str(data_yaml_path),
@@ -178,6 +190,108 @@ def _load_coco_source(
             xc, yc = (x + w / 2) / width, (y + h / 2) / height
             wn, hn = w / width, h / height
             lines.append(f"{class_index[cat_name]} {xc:.6f} {yc:.6f} {wn:.6f} {hn:.6f}")
+
+        records.append(_Record(image_path=img_path, label_lines=lines))
+
+    return records, warnings
+
+
+def _load_voc_source(
+    raw_dir: Path, voc_dir: Path, classes: list[str]
+) -> tuple[list[_Record], list[str]]:
+    """Parse Pascal VOC XML annotations and convert bboxes to normalised YOLO format.
+
+    xmin/ymin/xmax/ymax (absolute pixel) → (class_id, xc, yc, w, h) normalised.
+    Unknown classes and missing images are skipped with a warning, not a hard failure.
+    """
+    img_dir = raw_dir / "images" if (raw_dir / "images").is_dir() else raw_dir
+    class_index = {name: i for i, name in enumerate(classes)}
+    warnings: list[str] = []
+    records: list[_Record] = []
+
+    xml_files = sorted(voc_dir.rglob("*.xml"))
+    if not xml_files:
+        warnings.append(f"No VOC XML annotation files found under {voc_dir}.")
+        return records, warnings
+
+    for xml_path in xml_files:
+        try:
+            root = ET.parse(xml_path).getroot()
+        except ET.ParseError as exc:
+            warnings.append(f"Failed to parse VOC XML '{xml_path.name}': {exc} — skipped.")
+            continue
+
+        # Resolve the image file.  <filename> tag is preferred; fall back to same stem.
+        file_name_el = root.find("filename")
+        file_name = (
+            file_name_el.text.strip() if file_name_el is not None and file_name_el.text else None
+        )
+        img_path: Path | None = None
+        if file_name:
+            candidate = img_dir / file_name
+            if candidate.exists():
+                img_path = candidate
+        if img_path is None:
+            img_path = next(
+                (
+                    img_dir / (xml_path.stem + ext)
+                    for ext in _IMAGE_EXTS
+                    if (img_dir / (xml_path.stem + ext)).exists()
+                ),
+                None,
+            )
+        if img_path is None:
+            label = file_name or xml_path.stem
+            warnings.append(
+                f"VOC XML '{xml_path.name}': image '{label}' not found under {img_dir} — skipped."
+            )
+            continue
+
+        size_el = root.find("size")
+        if size_el is None:
+            warnings.append(f"VOC XML '{xml_path.name}': missing <size> element — skipped.")
+            continue
+        try:
+            width = int(size_el.findtext("width", "0") or "0")
+            height = int(size_el.findtext("height", "0") or "0")
+        except ValueError:
+            warnings.append(f"VOC XML '{xml_path.name}': non-integer width/height — skipped.")
+            continue
+        if not width or not height:
+            warnings.append(f"VOC XML '{xml_path.name}': zero width or height — skipped.")
+            continue
+
+        lines: list[str] = []
+        for obj in root.findall("object"):
+            name_el = obj.find("name")
+            if name_el is None or not name_el.text:
+                warnings.append(f"VOC XML '{xml_path.name}': <object> missing <name> — skipped.")
+                continue
+            class_name = name_el.text.strip()
+            if class_name not in class_index:
+                warnings.append(
+                    f"VOC XML '{xml_path.name}': unknown class '{class_name}' — skipped."
+                )
+                continue
+            bndbox = obj.find("bndbox")
+            if bndbox is None:
+                warnings.append(f"VOC XML '{xml_path.name}': <object> missing <bndbox> — skipped.")
+                continue
+            try:
+                xmin = float(bndbox.findtext("xmin", "0") or "0")
+                ymin = float(bndbox.findtext("ymin", "0") or "0")
+                xmax = float(bndbox.findtext("xmax", "0") or "0")
+                ymax = float(bndbox.findtext("ymax", "0") or "0")
+            except ValueError:
+                warnings.append(
+                    f"VOC XML '{xml_path.name}': non-numeric bndbox coordinates — skipped."
+                )
+                continue
+            xc = (xmin + xmax) / 2 / width
+            yc = (ymin + ymax) / 2 / height
+            w = (xmax - xmin) / width
+            h = (ymax - ymin) / height
+            lines.append(f"{class_index[class_name]} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}")
 
         records.append(_Record(image_path=img_path, label_lines=lines))
 

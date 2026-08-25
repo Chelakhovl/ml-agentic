@@ -57,9 +57,7 @@ class MonitoringAgent(BaseAgent):
 
         output = self._monitor.run(input, self.artifacts_dir)
 
-        json_path, md_path = self._report_writer.write_monitoring_report(
-            output, self.artifacts_dir
-        )
+        json_path, md_path = self._report_writer.write_monitoring_report(output, self.artifacts_dir)
         output.monitoring_report_path = str(json_path)
         for p in (str(json_path), str(md_path)):
             if p not in output.artifacts:

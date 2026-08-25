@@ -66,6 +66,7 @@ class AzureMLPipelineRunner:
             from agentic_mlops.integrations.azure_ml_client import (  # noqa: PLC0415
                 DefaultAzureMLClientFactory,
             )
+
             client_factory = DefaultAzureMLClientFactory()
         self._factory = client_factory
 
@@ -139,12 +140,22 @@ class AzureMLPipelineRunner:
                 base_dir = training_artifacts_dir / "_pipeline_outputs"
 
             train_out = self._build_training_output(
-                cfg, pipeline_name, base_dir, training_artifacts_dir, started_at, completed_at,
+                cfg,
+                pipeline_name,
+                base_dir,
+                training_artifacts_dir,
+                started_at,
+                completed_at,
                 submitted,
             )
             eval_out = self._build_evaluation_output(
-                evaluation_inp, eval_cfg, base_dir, evaluation_artifacts_dir,
-                pipeline_name, started_at, completed_at,
+                evaluation_inp,
+                eval_cfg,
+                base_dir,
+                evaluation_artifacts_dir,
+                pipeline_name,
+                started_at,
+                completed_at,
             )
             return train_out, eval_out
 
@@ -445,9 +456,7 @@ class AzureMLPipelineRunner:
         if metrics_matches[0] != metrics_dst:
             shutil.copy2(metrics_matches[0], metrics_dst)
 
-        metrics = metrics_from_json(
-            json.loads(metrics_dst.read_text(encoding="utf-8"))
-        )
+        metrics = metrics_from_json(json.loads(metrics_dst.read_text(encoding="utf-8")))
         eval_artifacts = self._collect_eval_plot_artifacts(base_dir, artifacts_dir)
         eval_artifacts.insert(0, str(metrics_dst))
 

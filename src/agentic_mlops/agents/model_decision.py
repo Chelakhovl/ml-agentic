@@ -63,9 +63,12 @@ class ModelDecisionAgent(BaseAgent):
         client = self._mlflow
         assert rid is not None and client is not None
 
-        client.log_params(rid, {
-            "model_decision.evaluation_report_path": inp.evaluation_report_path,
-        })
+        client.log_params(
+            rid,
+            {
+                "model_decision.evaluation_report_path": inp.evaluation_report_path,
+            },
+        )
 
         metrics: dict[str, float] = {}
         if output.map50_improvement is not None:
@@ -75,10 +78,13 @@ class ModelDecisionAgent(BaseAgent):
         if metrics:
             client.log_metrics(rid, metrics)
 
-        client.log_tags(rid, {
-            "workflow_step": "model_decision",
-            "model_decision": str(output.decision),
-        })
+        client.log_tags(
+            rid,
+            {
+                "workflow_step": "model_decision",
+                "model_decision": str(output.decision),
+            },
+        )
 
         for artifact_path in output.artifacts:
             client.log_artifact(rid, artifact_path)

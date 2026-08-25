@@ -133,7 +133,9 @@ def test_corrupted_ratio_exceeds_threshold_fails(tmp_path: Path) -> None:
 
     result = DataIntakeScanner().scan(
         DataIntakeInput(
-            raw_data_path=str(raw), dataset_name="ds", source="s",
+            raw_data_path=str(raw),
+            dataset_name="ds",
+            source="s",
             corrupted_ratio_threshold=0.1,
         )
     )
@@ -154,7 +156,9 @@ def test_corrupted_ratio_within_threshold_does_not_fail(tmp_path: Path) -> None:
 
     result = DataIntakeScanner().scan(
         DataIntakeInput(
-            raw_data_path=str(raw), dataset_name="ds", source="s",
+            raw_data_path=str(raw),
+            dataset_name="ds",
+            source="s",
             corrupted_ratio_threshold=0.1,  # 1/21 ~= 4.8% < 10%
         )
     )
@@ -192,7 +196,9 @@ def test_duplicate_ratio_exceeds_threshold_needs_approval(tmp_path: Path) -> Non
 
     result = DataIntakeScanner().scan(
         DataIntakeInput(
-            raw_data_path=str(raw), dataset_name="ds", source="s",
+            raw_data_path=str(raw),
+            dataset_name="ds",
+            source="s",
             duplicate_ratio_threshold=0.1,  # 2 extra copies / 4 files = 50% > 10%
         )
     )
@@ -257,9 +263,7 @@ def test_agent_writes_manifest_files(tmp_path: Path) -> None:
     artifacts_dir = tmp_path / "artifacts"
 
     agent = DataIntakeAgent(artifacts_dir=artifacts_dir)
-    result = agent.run(
-        DataIntakeInput(raw_data_path=str(raw), dataset_name="ds", source="s")
-    )
+    result = agent.run(DataIntakeInput(raw_data_path=str(raw), dataset_name="ds", source="s"))
 
     assert (artifacts_dir / "dataset_manifest.json").exists()
     assert (artifacts_dir / "dataset_manifest.md").exists()

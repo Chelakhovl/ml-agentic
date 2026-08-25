@@ -87,14 +87,10 @@ class LocalFileLogClient(InferenceLogClient):
                     try:
                         record = json.loads(line)
                     except json.JSONDecodeError as exc:
-                        warnings.append(
-                            f"Skipping malformed JSON on line {lineno}: {exc}"
-                        )
+                        warnings.append(f"Skipping malformed JSON on line {lineno}: {exc}")
                         continue
                     if not isinstance(record, dict):
-                        warnings.append(
-                            f"Skipping non-object record on line {lineno}."
-                        )
+                        warnings.append(f"Skipping non-object record on line {lineno}.")
                         continue
                     records.append(record)
         except OSError as exc:
@@ -149,8 +145,7 @@ class ApplicationInsightsLogClient(InferenceLogClient):
             cred = credential or DefaultAzureCredential()
         except ImportError as exc:
             raise RuntimeError(
-                "azure-identity is not installed. "
-                "Run: pip install 'agentic-mlops-yolo[azure]'"
+                "azure-identity is not installed. " "Run: pip install 'agentic-mlops-yolo[azure]'"
             ) from exc
 
         self._client = LogsQueryClient(cred)
@@ -217,9 +212,7 @@ def _rows_to_records(table: Any) -> list[dict]:
                 "image_id": row_dict.get("image_id") or "unknown",
                 "latency_ms": _safe_float(row_dict.get("latency_ms")),
                 "error": bool(row_dict.get("is_error") or False),
-                "detections": [
-                    _normalise_detection(d) for d in detections if isinstance(d, dict)
-                ],
+                "detections": [_normalise_detection(d) for d in detections if isinstance(d, dict)],
             }
         )
     return records

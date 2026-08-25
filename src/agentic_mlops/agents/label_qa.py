@@ -79,10 +79,13 @@ class LabelQAAgent(BaseAgent):
         }
         client.log_metrics(rid, metrics)
 
-        client.log_tags(rid, {
-            "workflow_step": "label_qa",
-            "label_qa_status": str(output.status),
-        })
+        client.log_tags(
+            rid,
+            {
+                "workflow_step": "label_qa",
+                "label_qa_status": str(output.status),
+            },
+        )
 
         for artifact_path in output.artifacts:
             client.log_artifact(rid, artifact_path)

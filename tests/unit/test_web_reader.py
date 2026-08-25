@@ -9,6 +9,7 @@ import pytest
 
 from agentic_mlops.web.reader import (
     get_audit_log,
+    get_dataset_quality_data,
     get_model_versions,
     get_monitoring_report,
     get_workflow,
@@ -387,3 +388,514 @@ class TestGetMonitoringReport:
         report = get_monitoring_report(runs, "wf_05", "custom_monitor")
         assert report is not None
         assert report["_step"] == "custom_monitor"
+
+
+# ── get_dataset_quality_data ──────────────────────────────────────────────────
+
+
+def _write_dataset_lineage(
+    reg_dir: Path,
+    dataset_name: str,
+    version: int,
+    quality_summary: dict | None = None,
+    validation_status: str | None = None,
+    label_qa_status: str | None = None,
+    classes: list | None = None,
+) -> None:
+    version_dir = reg_dir / dataset_name / "versions" / str(version)
+    version_dir.mkdir(parents=True, exist_ok=True)
+    lineage = {
+        "dataset_name": dataset_name,
+        "version": version,
+        "hash": "abc123",
+        "registered_at": f"2026-01-0{version}T10:00:00+00:00",
+        "validation_status": validation_status,
+        "label_qa_status": label_qa_status,
+        "classes": classes or [],
+    }
+    if quality_summary is not None:
+        lineage["quality_summary"] = quality_summary
+    (version_dir / "lineage.json").write_text(json.dumps(lineage), encoding="utf-8")
+
+
+class TestGetDatasetQualityData:
+    def test_returns_empty_for_missing_dataset(self, tmp_path):
+        reg = tmp_path / "reg"
+        assert get_dataset_quality_data(reg, "no_such") == []
+
+    def test_unsafe_name_returns_empty(self, tmp_path):
+        assert get_dataset_quality_data(tmp_path, "../../evil") == []
+
+    def test_basic_version_without_quality_summary(self, tmp_path):
+        reg = tmp_path / "reg"
+        _write_dataset_lineage(reg, "ds", 1)
+        result = get_dataset_quality_data(reg, "ds")
+        assert len(result) == 1
+        row = result[0]
+        assert row["version"] == 1
+        assert row["num_images"] is None
+        assert row["num_labels"] is None
+        assert row["class_distribution"] == {}
+        assert row["blocking_issues_count"] == 0
+        assert row["label_issues_count"] == 0
+
+    def test_version_with_quality_summary(self, tmp_path):
+        reg = tmp_path / "reg"
+        qs = {
+            "num_images": 120,
+            "num_labels": 118,
+            "class_distribution": {"scratch": 60, "dent": 58},
+            "blocking_issues_count": 0,
+            "label_issues_count": 3,
+        }
+        _write_dataset_lineage(
+            reg,
+            "ds",
+            1,
+            quality_summary=qs,
+            validation_status="passed",
+            label_qa_status="review_required",
+            classes=["scratch", "dent"],
+        )
+        result = get_dataset_quality_data(reg, "ds")
+        assert len(result) == 1
+        row = result[0]
+        assert row["num_images"] == 120
+        assert row["num_labels"] == 118
+        assert row["class_distribution"] == {"scratch": 60, "dent": 58}
+        assert row["blocking_issues_count"] == 0
+        assert row["label_issues_count"] == 3
+        assert row["validation_status"] == "passed"
+        assert row["label_qa_status"] == "review_required"
+        assert row["classes"] == ["scratch", "dent"]
+
+    def test_multiple_versions_newest_first(self, tmp_path):
+        reg = tmp_path / "reg"
+        _write_dataset_lineage(reg, "ds", 1)
+        _write_dataset_lineage(reg, "ds", 2)
+        _write_dataset_lineage(reg, "ds", 3)
+        result = get_dataset_quality_data(reg, "ds")
+        assert [r["version"] for r in result] == [3, 2, 1]
+
+    def test_corrupt_lineage_skipped_gracefully(self, tmp_path):
+        reg = tmp_path / "reg"
+        version_dir = reg / "ds" / "versions" / "1"
+        version_dir.mkdir(parents=True, exist_ok=True)
+        (version_dir / "lineage.json").write_text("NOT JSON", encoding="utf-8")
+        result = get_dataset_quality_data(reg, "ds")
+        # corrupt lineage → empty dict → still returns a row but with empty values
+        assert len(result) == 1
+        assert result[0]["num_images"] is None
+
+    def test_registered_at_propagated(self, tmp_path):
+        reg = tmp_path / "reg"
+        _write_dataset_lineage(reg, "ds", 1)
+        result = get_dataset_quality_data(reg, "ds")
+        assert result[0]["registered_at"] == "2026-01-01T10:00:00+00:00"
+
+
+# ── is_safe_path_id ───────────────────────────────────────────────────────────
+
+
+class TestIsSafePathId:
+    def test_valid_ids_accepted(self):
+        from agentic_mlops.web.reader import is_safe_path_id
+
+        assert is_safe_path_id("wf_001")
+        assert is_safe_path_id("my-model")
+        assert is_safe_path_id("dataset123")
+        assert is_safe_path_id("step_name")
+
+    def test_empty_string_rejected(self):
+        from agentic_mlops.web.reader import is_safe_path_id
+
+        assert not is_safe_path_id("")
+
+    def test_forward_slash_rejected(self):
+        from agentic_mlops.web.reader import is_safe_path_id
+
+        assert not is_safe_path_id("a/b")
+        assert not is_safe_path_id("../../evil")
+        assert not is_safe_path_id("/etc/passwd")
+
+    def test_backslash_rejected(self):
+        from agentic_mlops.web.reader import is_safe_path_id
+
+        assert not is_safe_path_id("a\\b")
+
+    def test_dot_and_dotdot_rejected(self):
+        from agentic_mlops.web.reader import is_safe_path_id
+
+        assert not is_safe_path_id(".")
+        assert not is_safe_path_id("..")
+
+
+# ── list_hard_samples ─────────────────────────────────────────────────────────
+
+
+class TestListHardSamples:
+    def test_empty_dir_returns_empty(self, tmp_path):
+        from agentic_mlops.web.reader import list_hard_samples
+
+        assert list_hard_samples(tmp_path / "runs") == []
+
+    def test_missing_dir_returns_empty(self, tmp_path):
+        from agentic_mlops.web.reader import list_hard_samples
+
+        assert list_hard_samples(tmp_path / "nonexistent") == []
+
+    def test_finds_manifest_under_artifacts(self, tmp_path):
+        from agentic_mlops.web.reader import list_hard_samples
+
+        runs = tmp_path / "runs"
+        d = runs / "wf_1" / "artifacts" / "monitoring"
+        d.mkdir(parents=True)
+        samples = [{"image_id": "img1", "reason": "low_conf"}]
+        (d / "hard_samples_manifest.json").write_text(json.dumps(samples))
+        result = list_hard_samples(runs)
+        assert len(result) == 1
+        assert result[0]["workflow_id"] == "wf_1"
+        assert result[0]["step"] == "monitoring"
+        assert result[0]["count"] == 1
+
+    def test_skips_non_list_manifest(self, tmp_path):
+        from agentic_mlops.web.reader import list_hard_samples
+
+        runs = tmp_path / "runs"
+        d = runs / "wf_1" / "artifacts" / "monitoring"
+        d.mkdir(parents=True)
+        (d / "hard_samples_manifest.json").write_text('{"not": "a list"}')
+        assert list_hard_samples(runs) == []
+
+    def test_skips_corrupt_json(self, tmp_path):
+        from agentic_mlops.web.reader import list_hard_samples
+
+        runs = tmp_path / "runs"
+        d = runs / "wf_1" / "artifacts" / "monitoring"
+        d.mkdir(parents=True)
+        (d / "hard_samples_manifest.json").write_text("CORRUPT")
+        assert list_hard_samples(runs) == []
+
+    def test_aggregates_multiple_workflows(self, tmp_path):
+        from agentic_mlops.web.reader import list_hard_samples
+
+        runs = tmp_path / "runs"
+        for wf_id, count in [("wf_a", 2), ("wf_b", 3)]:
+            d = runs / wf_id / "artifacts" / "monitoring"
+            d.mkdir(parents=True)
+            (d / "hard_samples_manifest.json").write_text(
+                json.dumps([{"image_id": f"img_{i}"} for i in range(count)])
+            )
+        result = list_hard_samples(runs)
+        assert len(result) == 2
+        counts = {r["workflow_id"]: r["count"] for r in result}
+        assert counts["wf_a"] == 2
+        assert counts["wf_b"] == 3
+
+    def test_empty_list_has_count_zero(self, tmp_path):
+        from agentic_mlops.web.reader import list_hard_samples
+
+        runs = tmp_path / "runs"
+        d = runs / "wf_1" / "artifacts" / "monitoring"
+        d.mkdir(parents=True)
+        (d / "hard_samples_manifest.json").write_text("[]")
+        result = list_hard_samples(runs)
+        assert len(result) == 1
+        assert result[0]["count"] == 0
+
+
+# ── list_cost_reports / get_cost_report ───────────────────────────────────────
+
+
+class TestCostReports:
+    def _write_cost(
+        self,
+        runs_dir: Path,
+        wf_id: str,
+        total: float = 1.23,
+        generated_at: str = "2026-01-01T10:00:00+00:00",
+    ):
+        art_dir = runs_dir / wf_id / "artifacts"
+        art_dir.mkdir(parents=True, exist_ok=True)
+        report = {
+            "total_cost_usd": total,
+            "currency": "USD",
+            "generated_at": generated_at,
+            "entries": [{"step": "training", "cost_usd": total}],
+        }
+        (art_dir / "cost_report.json").write_text(json.dumps(report))
+
+    def test_list_empty_runs_dir(self, tmp_path):
+        from agentic_mlops.web.reader import list_cost_reports
+
+        assert list_cost_reports(tmp_path / "runs") == []
+
+    def test_list_finds_report(self, tmp_path):
+        from agentic_mlops.web.reader import list_cost_reports
+
+        runs = tmp_path / "runs"
+        self._write_cost(runs, "wf_1")
+        result = list_cost_reports(runs)
+        assert len(result) == 1
+        assert result[0]["workflow_id"] == "wf_1"
+        assert result[0]["total_cost_usd"] == pytest.approx(1.23)
+
+    def test_list_sorted_newest_first(self, tmp_path):
+        from agentic_mlops.web.reader import list_cost_reports
+
+        runs = tmp_path / "runs"
+        self._write_cost(runs, "wf_old", generated_at="2026-01-01T08:00:00+00:00")
+        self._write_cost(runs, "wf_new", generated_at="2026-01-02T08:00:00+00:00")
+        result = list_cost_reports(runs)
+        assert result[0]["workflow_id"] == "wf_new"
+
+    def test_list_skips_corrupt(self, tmp_path):
+        from agentic_mlops.web.reader import list_cost_reports
+
+        runs = tmp_path / "runs"
+        self._write_cost(runs, "wf_good")
+        bad_dir = runs / "wf_bad" / "artifacts"
+        bad_dir.mkdir(parents=True)
+        (bad_dir / "cost_report.json").write_text("CORRUPT")
+        result = list_cost_reports(runs)
+        assert len(result) == 1
+
+    def test_get_missing_returns_none(self, tmp_path):
+        from agentic_mlops.web.reader import get_cost_report
+
+        assert get_cost_report(tmp_path / "runs", "no_such") is None
+
+    def test_get_found(self, tmp_path):
+        from agentic_mlops.web.reader import get_cost_report
+
+        runs = tmp_path / "runs"
+        self._write_cost(runs, "wf_1", total=2.50)
+        report = get_cost_report(runs, "wf_1")
+        assert report is not None
+        assert report["total_cost_usd"] == pytest.approx(2.50)
+
+    def test_get_unsafe_id_returns_none(self, tmp_path):
+        from agentic_mlops.web.reader import get_cost_report
+
+        assert get_cost_report(tmp_path / "runs", "../evil") is None
+
+    def test_get_corrupt_returns_none(self, tmp_path):
+        from agentic_mlops.web.reader import get_cost_report
+
+        runs = tmp_path / "runs"
+        art_dir = runs / "wf_1" / "artifacts"
+        art_dir.mkdir(parents=True)
+        (art_dir / "cost_report.json").write_text("CORRUPT")
+        assert get_cost_report(runs, "wf_1") is None
+
+
+# ── get_baseline_comparison ───────────────────────────────────────────────────
+
+
+class TestGetBaselineComparison:
+    def test_missing_returns_none(self, tmp_path):
+        from agentic_mlops.web.reader import get_baseline_comparison
+
+        assert get_baseline_comparison(tmp_path / "runs", "wf_x") is None
+
+    def test_found(self, tmp_path):
+        from agentic_mlops.web.reader import get_baseline_comparison
+
+        runs = tmp_path / "runs"
+        d = runs / "wf_1" / "artifacts" / "evaluation"
+        d.mkdir(parents=True)
+        bc = {"baseline_map50": 0.8, "new_map50": 0.85, "delta_map50": 0.05, "improved": True}
+        (d / "baseline_comparison.json").write_text(json.dumps(bc))
+        result = get_baseline_comparison(runs, "wf_1")
+        assert result is not None
+        assert result["improved"] is True
+        assert result["delta_map50"] == pytest.approx(0.05)
+
+    def test_unsafe_id_returns_none(self, tmp_path):
+        from agentic_mlops.web.reader import get_baseline_comparison
+
+        assert get_baseline_comparison(tmp_path / "runs", "../../evil") is None
+
+    def test_corrupt_returns_none(self, tmp_path):
+        from agentic_mlops.web.reader import get_baseline_comparison
+
+        runs = tmp_path / "runs"
+        d = runs / "wf_1" / "artifacts" / "evaluation"
+        d.mkdir(parents=True)
+        (d / "baseline_comparison.json").write_text("CORRUPT")
+        assert get_baseline_comparison(runs, "wf_1") is None
+
+
+# ── get_risk_report ───────────────────────────────────────────────────────────
+
+
+class TestGetRiskReport:
+    def test_missing_returns_none(self, tmp_path):
+        from agentic_mlops.web.reader import get_risk_report
+
+        assert get_risk_report(tmp_path / "runs", "wf_x") is None
+
+    def test_found(self, tmp_path):
+        from agentic_mlops.web.reader import get_risk_report
+
+        runs = tmp_path / "runs"
+        d = runs / "wf_1" / "artifacts" / "model_registry"
+        d.mkdir(parents=True)
+        rr = {"risk_score": 0.2, "risk_level": "low", "factors": []}
+        (d / "risk_report.json").write_text(json.dumps(rr))
+        result = get_risk_report(runs, "wf_1")
+        assert result is not None
+        assert result["risk_level"] == "low"
+
+    def test_unsafe_id_returns_none(self, tmp_path):
+        from agentic_mlops.web.reader import get_risk_report
+
+        assert get_risk_report(tmp_path / "runs", "../../evil") is None
+
+
+# ── list_all_model_versions ───────────────────────────────────────────────────
+
+
+class TestListAllModelVersions:
+    def test_empty_registry(self, tmp_path):
+        from agentic_mlops.web.reader import list_all_model_versions
+
+        assert list_all_model_versions(tmp_path / "reg") == []
+
+    def test_missing_registry(self, tmp_path):
+        from agentic_mlops.web.reader import list_all_model_versions
+
+        assert list_all_model_versions(tmp_path / "nonexistent") == []
+
+    def test_ranked_by_map50_desc(self, tmp_path):
+        from agentic_mlops.web.reader import list_all_model_versions
+
+        reg = tmp_path / "reg"
+        _write_registry_model(reg, "model_a", version=1, map50=0.7)
+        _write_registry_model(reg, "model_b", version=1, map50=0.9)
+        result = list_all_model_versions(reg)
+        assert result[0]["model_name"] == "model_b"
+        assert result[0]["rank"] == 1
+        assert result[1]["rank"] == 2
+
+    def test_none_map50_unranked(self, tmp_path):
+        from agentic_mlops.web.reader import list_all_model_versions
+
+        reg = tmp_path / "reg"
+        _write_registry_model(reg, "model_a", version=1, map50=0.8)
+        ver_dir = reg / "model_b" / "versions" / "1"
+        ver_dir.mkdir(parents=True)
+        (ver_dir / "lineage.json").write_text("{}")
+        result = list_all_model_versions(reg)
+        ranked = [v for v in result if v["rank"] is not None]
+        unranked = [v for v in result if v["rank"] is None]
+        assert len(ranked) == 1
+        assert unranked[0]["model_name"] == "model_b"
+
+    def test_multiple_versions_for_same_model(self, tmp_path):
+        from agentic_mlops.web.reader import list_all_model_versions
+
+        reg = tmp_path / "reg"
+        _write_registry_model(reg, "yolo", version=1, map50=0.7)
+        _write_registry_model(reg, "yolo", version=2, map50=0.82)
+        result = list_all_model_versions(reg)
+        assert len(result) == 2
+        assert all(v["model_name"] == "yolo" for v in result)
+
+
+# ── get_dataset_diff ──────────────────────────────────────────────────────────
+
+
+class TestGetDatasetDiff:
+    def _write_version(
+        self, reg: Path, name: str, version: int, classes: list, num_images: int = 10
+    ):
+        d = reg / name / "versions" / str(version)
+        d.mkdir(parents=True, exist_ok=True)
+        lineage = {
+            "dataset_name": name,
+            "version": version,
+            "hash": f"hash_v{version}",
+            "registered_at": f"2026-01-0{version}T10:00:00+00:00",
+            "classes": classes,
+            "quality_summary": {
+                "num_images": num_images,
+                "num_labels": num_images,
+                "blocking_issues_count": 0,
+                "label_issues_count": 0,
+            },
+        }
+        (d / "lineage.json").write_text(json.dumps(lineage))
+
+    def test_both_versions_missing_returns_none(self, tmp_path):
+        from agentic_mlops.web.reader import get_dataset_diff
+
+        assert get_dataset_diff(tmp_path / "reg", "ds", 1, 2) is None
+
+    def test_one_version_missing_returns_none(self, tmp_path):
+        from agentic_mlops.web.reader import get_dataset_diff
+
+        reg = tmp_path / "reg"
+        self._write_version(reg, "ds", 1, ["scratch"])
+        assert get_dataset_diff(reg, "ds", 1, 2) is None
+
+    def test_diff_keys_present(self, tmp_path):
+        from agentic_mlops.web.reader import get_dataset_diff
+
+        reg = tmp_path / "reg"
+        self._write_version(reg, "ds", 1, ["scratch"])
+        self._write_version(reg, "ds", 2, ["scratch", "dent"])
+        diff = get_dataset_diff(reg, "ds", 1, 2)
+        assert diff is not None
+        assert diff["v1"] == 1
+        assert diff["v2"] == 2
+        assert "fields" in diff
+        assert "classes_added" in diff
+        assert "classes_removed" in diff
+
+    def test_classes_added_and_removed(self, tmp_path):
+        from agentic_mlops.web.reader import get_dataset_diff
+
+        reg = tmp_path / "reg"
+        self._write_version(reg, "ds", 1, ["scratch", "crack"])
+        self._write_version(reg, "ds", 2, ["scratch", "dent"])
+        diff = get_dataset_diff(reg, "ds", 1, 2)
+        assert "dent" in diff["classes_added"]
+        assert "crack" in diff["classes_removed"]
+        assert "scratch" in diff["classes_common"]
+
+    def test_num_images_delta(self, tmp_path):
+        from agentic_mlops.web.reader import get_dataset_diff
+
+        reg = tmp_path / "reg"
+        self._write_version(reg, "ds", 1, ["scratch"], num_images=100)
+        self._write_version(reg, "ds", 2, ["scratch"], num_images=150)
+        diff = get_dataset_diff(reg, "ds", 1, 2)
+        assert diff["fields"]["num_images"]["delta"] == pytest.approx(50)
+        assert diff["fields"]["num_images"]["changed"] is True
+
+
+# ── get_run_diff ──────────────────────────────────────────────────────────────
+
+
+class TestGetRunDiff:
+    def test_missing_workflow_returns_none(self, tmp_path):
+        from agentic_mlops.web.reader import get_run_diff
+
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        assert get_run_diff(runs, "wf_a", "wf_b") is None
+
+    def test_diff_computed(self, tmp_path):
+        from agentic_mlops.web.reader import get_run_diff
+
+        runs = tmp_path / "runs"
+        _write_state(runs, "wf_a", status="completed")
+        _write_state(runs, "wf_b", status="failed")
+        result = get_run_diff(runs, "wf_a", "wf_b")
+        assert result is not None
+        assert result["wf_a"] == "wf_a"
+        assert result["wf_b"] == "wf_b"
+        assert "step_diffs" in result
+        assert "metric_diffs" in result
+        assert "has_changes" in result

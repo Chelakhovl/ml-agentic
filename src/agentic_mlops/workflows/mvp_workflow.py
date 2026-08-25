@@ -99,11 +99,14 @@ class MVPWorkflow:
                 self._mlflow_config.experiment_name,
                 run_name,
             )
-            self._mlflow.log_tags(mlflow_run_id, {
-                "workflow_name": "mvp_local_yolo",
-                "training_runner": inp.training_runner or "fake",
-                "evaluation_runner": inp.evaluation_runner or "fake",
-            })
+            self._mlflow.log_tags(
+                mlflow_run_id,
+                {
+                    "workflow_name": "mvp_local_yolo",
+                    "training_runner": inp.training_runner or "fake",
+                    "evaluation_runner": inp.evaluation_runner or "fake",
+                },
+            )
 
         # ── Build factories (inject MLflow + Azure ML runners into defaults only) ──
         val_factory = self._user_validation_factory or self._default_val_factory(mlflow_run_id)
@@ -113,8 +116,8 @@ class MVPWorkflow:
         eval_factory = self._user_evaluation_factory or self._default_eval_factory(
             mlflow_run_id, azure_eval_runner
         )
-        approval_factory = (
-            self._user_approval_factory or self._default_approval_factory(mlflow_run_id)
+        approval_factory = self._user_approval_factory or self._default_approval_factory(
+            mlflow_run_id
         )
         registry_factory = self._user_registry_factory or self._default_registry_factory(
             mlflow_run_id, azure_registry_client
@@ -142,7 +145,10 @@ class MVPWorkflow:
             all_artifacts.extend(val_result.artifacts)
             if not val_result.success:
                 return self._fail(
-                    output_dir, steps, all_artifacts, "Dataset validation failed.",
+                    output_dir,
+                    steps,
+                    all_artifacts,
+                    "Dataset validation failed.",
                     mlflow_run_id,
                 )
         except Exception as exc:
@@ -197,12 +203,18 @@ class MVPWorkflow:
             self._artifact_store.upload_directory(eval_dir, "evaluation")
             if not train_result.success:
                 return self._fail(
-                    output_dir, steps, all_artifacts, "Pipeline training step failed.",
+                    output_dir,
+                    steps,
+                    all_artifacts,
+                    "Pipeline training step failed.",
                     mlflow_run_id,
                 )
             if not eval_result.success:
                 return self._fail(
-                    output_dir, steps, all_artifacts, "Pipeline evaluation step failed.",
+                    output_dir,
+                    steps,
+                    all_artifacts,
+                    "Pipeline evaluation step failed.",
                     mlflow_run_id,
                 )
         else:
@@ -339,9 +351,7 @@ class MVPWorkflow:
                 registry_output = registry_agent.run(
                     ModelRegistrationInput(
                         model_name=inp.model_name,
-                        training_output_path=str(
-                            output_dir / "training" / "training_output.json"
-                        ),
+                        training_output_path=str(output_dir / "training" / "training_output.json"),
                         evaluation_output_path=str(
                             output_dir / "evaluation" / "evaluation_output.json"
                         ),
@@ -352,14 +362,10 @@ class MVPWorkflow:
                         backend=inp.registry_backend,
                         mlflow_run_id=mlflow_run_id,
                         mlflow_experiment_name=(
-                            self._mlflow_config.experiment_name
-                            if self._mlflow_config
-                            else None
+                            self._mlflow_config.experiment_name if self._mlflow_config else None
                         ),
                         mlflow_tracking_uri=(
-                            self._mlflow_config.tracking_uri
-                            if self._mlflow_config
-                            else None
+                            self._mlflow_config.tracking_uri if self._mlflow_config else None
                         ),
                     )
                 )
@@ -392,22 +398,17 @@ class MVPWorkflow:
             mlflow_experiment_name=(
                 self._mlflow_config.experiment_name if self._mlflow_config else None
             ),
-            mlflow_tracking_uri=(
-                self._mlflow_config.tracking_uri if self._mlflow_config else None
-            ),
-            registration_status=(
-                str(registry_output.status) if registry_output else None
-            ),
+            mlflow_tracking_uri=(self._mlflow_config.tracking_uri if self._mlflow_config else None),
+            registration_status=(str(registry_output.status) if registry_output else None),
             registered_model_name=(
-                registry_output.model_name if registry_output and registry_output.success
-                else None
+                registry_output.model_name if registry_output and registry_output.success else None
             ),
             registered_model_version=(
-                registry_output.version if registry_output and registry_output.success
-                else None
+                registry_output.version if registry_output and registry_output.success else None
             ),
             registered_model_path=(
-                registry_output.registry_path if registry_output and registry_output.success
+                registry_output.registry_path
+                if registry_output and registry_output.success
                 else None
             ),
         )
@@ -431,9 +432,7 @@ class MVPWorkflow:
     # Training/evaluation/registry each reuse the same azure_config_path; resolved
     # up front in run() so a missing/invalid config fails before any step executes.
 
-    def _maybe_azure_pipeline_runner(
-        self, inp: MVPWorkflowInput
-    ) -> AzureMLPipelineRunner | None:
+    def _maybe_azure_pipeline_runner(self, inp: MVPWorkflowInput) -> AzureMLPipelineRunner | None:
         if inp.training_runner != "azure-ml-pipeline":
             return None
         if not inp.azure_config_path:
@@ -456,9 +455,7 @@ class MVPWorkflow:
             raise ValueError("azure_config_path is required when evaluation_runner='azure-ml'.")
         return AzureMLEvaluationRunner(AzureMLConfig.from_yaml(inp.azure_config_path))
 
-    def _maybe_azure_registry_client(
-        self, inp: MVPWorkflowInput
-    ) -> ModelRegistryClientBase | None:
+    def _maybe_azure_registry_client(self, inp: MVPWorkflowInput) -> ModelRegistryClientBase | None:
         if inp.registry_backend != RegistryBackend.AZURE_ML:
             return None
         if not inp.azure_config_path:
@@ -543,9 +540,7 @@ class MVPWorkflow:
             mlflow_experiment_name=(
                 self._mlflow_config.experiment_name if self._mlflow_config else None
             ),
-            mlflow_tracking_uri=(
-                self._mlflow_config.tracking_uri if self._mlflow_config else None
-            ),
+            mlflow_tracking_uri=(self._mlflow_config.tracking_uri if self._mlflow_config else None),
         )
         json_path, md_path = self._report_writer.write_workflow_summary(output, output_dir)
         output.workflow_summary_path = str(json_path)

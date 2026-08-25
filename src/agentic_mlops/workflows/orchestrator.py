@@ -107,10 +107,14 @@ from agentic_mlops.integrations.model_registry import (
 from agentic_mlops.integrations.notification_client import NotificationClientBase
 from agentic_mlops.integrations.workflow_state_store import WorkflowStateStore
 from agentic_mlops.observability.logging import get_logger
+from agentic_mlops.tools.baseline_comparator import BaselineComparator
+from agentic_mlops.tools.baseline_resolver import BaselineResolver
+from agentic_mlops.tools.cost_tracker import CostTracker
 from agentic_mlops.tools.deployer import ModelDeployer
 from agentic_mlops.tools.evaluation_runner import AzureMLEvaluationRunner
 from agentic_mlops.tools.pipeline_runner import AzureMLPipelineRunner
 from agentic_mlops.tools.report_writer import ReportWriter
+from agentic_mlops.tools.risk_scorer import ModelRiskScorer
 from agentic_mlops.tools.training_runner import AzureMLTrainingRunner
 
 # Steps that can pause the workflow (pending_approval=True) instead of failing,
@@ -143,7 +147,9 @@ def _skip(reason: str) -> _StepOutcome:
     """A step that didn't run because an upstream gate rejected/skipped —
     a graceful, cascading no-op, not a failure."""
     return _StepOutcome(
-        success=True, status_label="SKIPPED", skipped=True,
+        success=True,
+        status_label="SKIPPED",
+        skipped=True,
         key_outputs={"skipped": True, "skip_reason": reason},
     )
 
@@ -158,6 +164,10 @@ class OrchestratorWorkflow:
         mlflow_config: MLflowConfig | None = None,
         artifact_store: ArtifactStore | None = None,
         notification_client: NotificationClientBase | None = None,
+        github_actions_client: Any | None = None,
+        cost_tracker: CostTracker | None = None,
+        baseline_comparator: BaselineComparator | None = None,
+        risk_scorer: ModelRiskScorer | None = None,
     ) -> None:
         self.logger = get_logger(self.__class__.__name__)
         self._report_writer = ReportWriter()
@@ -165,12 +175,18 @@ class OrchestratorWorkflow:
         self._mlflow_config = mlflow_config
         self._artifact_store: ArtifactStore = artifact_store or NoOpArtifactStore()
         self._notification_client = notification_client
+        self._github_actions_client = github_actions_client
+        self._cost_tracker = cost_tracker
+        self._baseline_comparator = baseline_comparator
+        self._risk_scorer = risk_scorer
         # Set fresh at the top of every run() call; read by _mlflow_kwargs()
         # so every _step_* method can inject tracking without threading an
         # extra parameter through all 11 of them.
         self._current_mlflow_run_id: str | None = None
         # Resolved at the top of run() from injected client or inp.notifications.
         self._notifier: NotificationClientBase | None = None
+        # Resolved at the top of run() from injected client or inp.github_actions.
+        self._gh_client: Any | None = None
 
     def _mlflow_kwargs(self) -> dict[str, Any]:
         if not self._current_mlflow_run_id:
@@ -184,6 +200,142 @@ class OrchestratorWorkflow:
             self._notifier.send(event_name, payload)
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("Notification send failed: %s", exc)
+
+    def _record_step_cost(
+        self,
+        step: str,
+        inp: OrchestratorInput,
+        azure_config: AzureMLConfig | None,
+        outcome: _StepOutcome,
+    ) -> None:
+        if self._cost_tracker is None:
+            return
+        runner = (
+            inp.training_runner
+            if step == "training"
+            else (inp.evaluation_runner or "fake")
+            if step == "evaluation"
+            else "fake"
+        )
+        # Use cluster name for Azure ML so users can map it in their pricing config.
+        if runner in ("azure-ml", "azure-ml-pipeline") and azure_config is not None:
+            compute_type = azure_config.compute_name
+        elif runner == "local-yolo":
+            compute_type = "local"
+        else:
+            compute_type = runner or "fake"
+        self._cost_tracker.record(
+            step=step,
+            runner=runner or "fake",
+            compute_type=compute_type,
+            started_at=outcome.key_outputs.get("started_at"),
+            completed_at=outcome.key_outputs.get("completed_at"),
+        )
+
+    def _run_baseline_comparison_if_configured(
+        self,
+        inp: OrchestratorInput,
+        output_root: Path,
+        step_outputs: dict,
+        all_artifacts: list[str],
+    ) -> None:
+        """After a successful evaluation step, compare against baseline if configured.
+
+        Priority:
+        1. ``inp.baseline_report_path`` — explicit path, always takes precedence.
+        2. ``inp.auto_baseline=True`` — auto-resolve the best registered model from
+           ``inp.registry_dir``, write a synthetic eval report, and use that.
+        3. Neither set — skip comparison.
+        """
+        baseline_path: str | None = inp.baseline_report_path
+
+        if not baseline_path and inp.auto_baseline:
+            resolver = BaselineResolver()
+            resolved = resolver.resolve(
+                inp.registry_dir,
+                exclude_model_name=inp.model_name or None,
+            )
+            if resolved is not None:
+                synthetic_path = resolver.write_synthetic_report(
+                    resolved,
+                    output_dir=output_root / "evaluation",
+                )
+                baseline_path = str(synthetic_path)
+                self.logger.info(
+                    "Auto-resolved baseline from registry",
+                    extra={
+                        "baseline_model": resolved.model_name,
+                        "baseline_version": resolved.version,
+                        "baseline_map50": resolved.map50,
+                    },
+                )
+            else:
+                self.logger.info(
+                    "auto_baseline=True but no registered model found; skipping comparison"
+                )
+
+        if not baseline_path:
+            return
+
+        comparator = self._baseline_comparator or BaselineComparator()
+        eval_report_path = (step_outputs.get("evaluation") or {}).get("report_path")
+        if not eval_report_path:
+            self.logger.warning(
+                "baseline configured but no evaluation report_path found; skipping comparison"
+            )
+            return
+        try:
+            result = comparator.compare(
+                eval_report_path=eval_report_path,
+                baseline_path=baseline_path,
+                output_dir=output_root / "evaluation",
+            )
+            comparison_path = str(output_root / "evaluation" / "baseline_comparison.json")
+            all_artifacts.append(comparison_path)
+            eval_out = step_outputs.get("evaluation") or {}
+            eval_out["baseline_comparison_path"] = comparison_path
+            eval_out["baseline_improved"] = result.improved
+            eval_out["baseline_delta_map50"] = result.delta_map50
+            step_outputs["evaluation"] = eval_out
+            self.logger.info(
+                "Baseline comparison complete",
+                extra={
+                    "delta_map50": result.delta_map50,
+                    "improved": result.improved,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("Baseline comparison failed (non-fatal)", extra={"error": str(exc)})
+
+    def _run_risk_scoring_if_configured(
+        self,
+        output_root: Path,
+        step_outputs: dict,
+        all_artifacts: list[str],
+    ) -> None:
+        """After a successful model_registry step, compute a risk report."""
+        scorer = self._risk_scorer or ModelRiskScorer()
+        eval_out = step_outputs.get("evaluation") or {}
+        eval_report_path = eval_out.get("report_path")
+        if not eval_report_path:
+            self.logger.warning(
+                "risk_scorer: no evaluation report_path in step_outputs; skipping risk scoring"
+            )
+            return
+        baseline_comparison_path = eval_out.get("baseline_comparison_path")
+        try:
+            scorer.score(
+                eval_report_path=eval_report_path,
+                baseline_comparison_path=baseline_comparison_path,
+                output_dir=output_root / "model_registry",
+            )
+            risk_path = str(output_root / "model_registry" / "risk_report.json")
+            all_artifacts.append(risk_path)
+            reg_out = step_outputs.get("model_registry") or {}
+            reg_out["risk_report_path"] = risk_path
+            step_outputs["model_registry"] = reg_out
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("Risk scoring failed (non-fatal)", extra={"error": str(exc)})
 
     def _resolve_mlflow_run(self, state: dict) -> str | None:
         existing = state.get("mlflow_run_id")
@@ -214,7 +366,18 @@ class OrchestratorWorkflow:
             return self._immediate_fail(store, inp, str(exc))
 
         existing_state = store.load_state()
-        if existing_state is not None and not inp.resume:
+        effective_resume = inp.resume or bool(inp.resume_from_step)
+
+        # resume_from_step requires an existing state to rewind into.
+        # Plain resume=True with no state is allowed (starts fresh — idempotent).
+        if inp.resume_from_step and existing_state is None:
+            return self._immediate_fail(
+                store,
+                inp,
+                f"--resume-from-step requires an existing state file for workflow_id "
+                f"'{inp.workflow_id}' ({store.state_path}). Run the workflow first.",
+            )
+        if existing_state is not None and not effective_resume:
             return self._immediate_fail(
                 store,
                 inp,
@@ -223,8 +386,47 @@ class OrchestratorWorkflow:
                 "different workflow_id.",
             )
 
-        if existing_state is not None and inp.resume:
+        if existing_state is not None and effective_resume:
             state = existing_state
+
+            if inp.resume_from_step:
+                if inp.resume_from_step not in steps:
+                    return self._immediate_fail(
+                        store,
+                        inp,
+                        f"resume_from_step '{inp.resume_from_step}' is not in the configured "
+                        f"steps: {list(steps)}",
+                    )
+                target_idx = steps.index(inp.resume_from_step)
+                steps_to_keep = set(steps[:target_idx])
+
+                # Trim completed_steps: only keep those before the target.
+                state["completed_steps"] = [
+                    s for s in state.get("completed_steps", []) if s in steps_to_keep
+                ]
+                # Clear outputs/status for the target step and all after it.
+                for s in steps[target_idx:]:
+                    state.get("step_outputs", {}).pop(s, None)
+                    state.get("step_status", {}).pop(s, None)
+
+                # Reset current_state so the first re-run step's _RUNNING transition is legal.
+                if target_idx == 0:
+                    state["current_state"] = "NEW"
+                else:
+                    state["current_state"] = f"{steps[target_idx - 1].upper()}_COMPLETED"
+
+                state["status"] = OrchestratorStatus.RUNNING.value
+                state["pending_approval_id"] = None
+                store.save_state(state)
+                store.append_audit(
+                    {
+                        "event": "workflow_resume_from_step",
+                        "step": inp.resume_from_step,
+                        "steps_kept": list(steps_to_keep),
+                        "workflow_id": inp.workflow_id,
+                    }
+                )
+
             step_results = [
                 OrchestratorStepResult(
                     step=s,
@@ -237,8 +439,12 @@ class OrchestratorWorkflow:
             if state.get("status") == OrchestratorStatus.COMPLETED.value:
                 store.append_audit({"event": "workflow_already_completed"})
                 return self._finish(
-                    store, state, step_results, state.get("artifacts", []),
-                    OrchestratorStatus.COMPLETED, "Workflow already completed.",
+                    store,
+                    state,
+                    step_results,
+                    state.get("artifacts", []),
+                    OrchestratorStatus.COMPLETED,
+                    "Workflow already completed.",
                 )
             store.append_audit({"event": "workflow_resumed", "workflow_id": inp.workflow_id})
         else:
@@ -275,12 +481,38 @@ class OrchestratorWorkflow:
         if self._notification_client is not None:
             self._notifier = self._notification_client
         elif inp.notifications and inp.notifications.enabled:
-            from agentic_mlops.integrations.notification_client import (
-                WebhookNotificationClient,  # noqa: PLC0415
+            from agentic_mlops.integrations.notification_client import (  # noqa: PLC0415
+                CompositeNotificationClient,
+                SmtpEmailNotificationClient,
+                WebhookNotificationClient,
             )
-            self._notifier = WebhookNotificationClient(inp.notifications)
+
+            n = inp.notifications
+            _clients = []
+            if n.teams_webhook_url or n.slack_webhook_url:
+                _clients.append(WebhookNotificationClient(n))
+            if n.smtp_host and n.email_to:
+                _clients.append(SmtpEmailNotificationClient(n))
+            self._notifier = (
+                _clients[0]
+                if len(_clients) == 1
+                else CompositeNotificationClient(_clients)
+                if _clients
+                else None
+            )
         else:
             self._notifier = None
+
+        if self._github_actions_client is not None:
+            self._gh_client = self._github_actions_client
+        elif inp.github_actions and inp.github_actions.enabled:
+            from agentic_mlops.integrations.github_actions_client import (  # noqa: PLC0415
+                GithubActionsClient,
+            )
+
+            self._gh_client = GithubActionsClient(inp.github_actions)
+        else:
+            self._gh_client = None
 
         azure_config: AzureMLConfig | None = None
         if inp.azure_config_path:
@@ -288,8 +520,13 @@ class OrchestratorWorkflow:
                 azure_config = AzureMLConfig.from_yaml(inp.azure_config_path)
             except Exception as exc:
                 return self._finish(
-                    store, state, step_results, all_artifacts, OrchestratorStatus.FAILED,
-                    f"Cannot load azure_config_path: {exc}", errors=[str(exc)],
+                    store,
+                    state,
+                    step_results,
+                    all_artifacts,
+                    OrchestratorStatus.FAILED,
+                    f"Cannot load azure_config_path: {exc}",
+                    errors=[str(exc)],
                 )
 
         for step in steps:
@@ -316,14 +553,22 @@ class OrchestratorWorkflow:
                 )
                 self._transition(state, f"{step.upper()}_FAILED", steps)
                 return self._finish(
-                    store, state, step_results, all_artifacts, OrchestratorStatus.FAILED,
-                    f"{step} raised an exception: {exc}", errors=[str(exc)],
+                    store,
+                    state,
+                    step_results,
+                    all_artifacts,
+                    OrchestratorStatus.FAILED,
+                    f"{step} raised an exception: {exc}",
+                    errors=[str(exc)],
                 )
 
             step_results.append(
                 OrchestratorStepResult(
-                    step=step, status=outcome.status_label, success=outcome.success,
-                    errors=outcome.errors, artifacts=outcome.artifacts,
+                    step=step,
+                    status=outcome.status_label,
+                    success=outcome.success,
+                    errors=outcome.errors,
+                    artifacts=outcome.artifacts,
                 )
             )
             all_artifacts.extend(outcome.artifacts)
@@ -334,7 +579,9 @@ class OrchestratorWorkflow:
             state["artifacts"] = all_artifacts
             store.append_audit(
                 {
-                    "event": "step_finished", "step": step, "success": outcome.success,
+                    "event": "step_finished",
+                    "step": step,
+                    "success": outcome.success,
                     "status": outcome.status_label,
                 }
             )
@@ -352,7 +599,8 @@ class OrchestratorWorkflow:
 
             if not outcome.success:
                 terminal = (
-                    OrchestratorStatus.BLOCKED if outcome.coarse == "blocked"
+                    OrchestratorStatus.BLOCKED
+                    if outcome.coarse == "blocked"
                     else OrchestratorStatus.FAILED
                 )
                 suffix = "BLOCKED" if terminal == OrchestratorStatus.BLOCKED else "FAILED"
@@ -362,8 +610,13 @@ class OrchestratorWorkflow:
                 )
                 self._transition(state, f"{step.upper()}_{suffix}", steps)
                 return self._finish(
-                    store, state, step_results, all_artifacts, terminal,
-                    f"{step} did not succeed.", errors=outcome.errors,
+                    store,
+                    state,
+                    step_results,
+                    all_artifacts,
+                    terminal,
+                    f"{step} did not succeed.",
+                    errors=outcome.errors,
                 )
 
             if outcome.pending_approval:
@@ -372,7 +625,11 @@ class OrchestratorWorkflow:
                 pending_id = f"{_PENDING_ID_PREFIX[step]}_{inp.workflow_id}"
                 state["pending_approval_id"] = pending_id
                 return self._finish(
-                    store, state, step_results, all_artifacts, OrchestratorStatus.PENDING_APPROVAL,
+                    store,
+                    state,
+                    step_results,
+                    all_artifacts,
+                    OrchestratorStatus.PENDING_APPROVAL,
                     "Workflow paused: awaiting a human approval decision. Re-run with "
                     "resume=True and an action set (or interactive mode) to continue.",
                     pending_approval_id=pending_id,
@@ -381,6 +638,13 @@ class OrchestratorWorkflow:
             completed.append(step)
             state["completed_steps"] = completed
             self._transition(state, f"{step.upper()}_COMPLETED", steps)
+            if step == "evaluation":
+                self._run_baseline_comparison_if_configured(
+                    inp, output_root, step_outputs, all_artifacts
+                )
+            if step == "model_registry":
+                self._run_risk_scoring_if_configured(output_root, step_outputs, all_artifacts)
+            self._record_step_cost(step, inp, azure_config, outcome)
             store.save_state(state)
             self._notify(
                 "step_completed",
@@ -393,7 +657,11 @@ class OrchestratorWorkflow:
 
         self._transition(state, "COMPLETED", steps)
         return self._finish(
-            store, state, step_results, all_artifacts, OrchestratorStatus.COMPLETED,
+            store,
+            state,
+            step_results,
+            all_artifacts,
+            OrchestratorStatus.COMPLETED,
             "Workflow completed.",
         )
 
@@ -452,9 +720,7 @@ class OrchestratorWorkflow:
             return _StepOutcome(
                 False, "FAILED", errors=["raw_data_path is required for the data_intake step."]
             )
-        agent = DataIntakeAgent(
-            artifacts_dir=output_root / "data_intake", **self._mlflow_kwargs()
-        )
+        agent = DataIntakeAgent(artifacts_dir=output_root / "data_intake", **self._mlflow_kwargs())
         result = agent.run(
             DataIntakeInput(
                 raw_data_path=inp.raw_data_path,
@@ -475,7 +741,8 @@ class OrchestratorWorkflow:
     ) -> _StepOutcome:
         if not inp.raw_data_path:
             return _StepOutcome(
-                False, "FAILED",
+                False,
+                "FAILED",
                 errors=["raw_data_path is required for the dataset_structuring step."],
             )
         if not inp.classes:
@@ -542,10 +809,10 @@ class OrchestratorWorkflow:
         if inp.dataset_registry_backend == DatasetRegistryBackend.AZURE_ML:
             if azure_config is None:
                 return _StepOutcome(
-                    False, "FAILED",
+                    False,
+                    "FAILED",
                     errors=[
-                        "azure_config_path is required when "
-                        "dataset_registry_backend='azure_ml'."
+                        "azure_config_path is required when " "dataset_registry_backend='azure_ml'."
                     ],
                 )
             registry_client = AzureMLDatasetRegistryClient(azure_config)
@@ -588,7 +855,8 @@ class OrchestratorWorkflow:
         validation = step_outputs.get("dataset_validation")
         if not validation:
             return _StepOutcome(
-                False, "FAILED",
+                False,
+                "FAILED",
                 errors=[
                     "training_approval requires the dataset_validation step to have run first."
                 ],
@@ -598,7 +866,9 @@ class OrchestratorWorkflow:
             # docstring. Don't even call TrainingApprovalAgent; it would just fail with
             # "Non-interactive mode requires --action".
             return _StepOutcome(
-                success=True, status_label="PENDING", pending_approval=True,
+                success=True,
+                status_label="PENDING",
+                pending_approval=True,
                 key_outputs={"approved": False},
             )
 
@@ -650,7 +920,8 @@ class OrchestratorWorkflow:
         if inp.training_runner == "azure-ml":
             if azure_config is None:
                 return _StepOutcome(
-                    False, "FAILED",
+                    False,
+                    "FAILED",
                     errors=["azure_config_path is required when training_runner='azure-ml'."],
                 )
             azure_runner = AzureMLTrainingRunner(azure_config)
@@ -658,7 +929,8 @@ class OrchestratorWorkflow:
         if inp.training_runner == "azure-ml-pipeline":
             if azure_config is None:
                 return _StepOutcome(
-                    False, "FAILED",
+                    False,
+                    "FAILED",
                     errors=[
                         "azure_config_path is required when training_runner='azure-ml-pipeline'."
                     ],
@@ -687,6 +959,8 @@ class OrchestratorWorkflow:
                 "best_weights_path": result.best_weights_path,
                 "job_status": str(result.job_status),
                 "training_output_path": str(step_dir / "training_output.json"),
+                "started_at": result.remote_started_at,
+                "completed_at": result.remote_completed_at,
             },
         )
 
@@ -759,7 +1033,8 @@ class OrchestratorWorkflow:
         training = step_outputs.get("training")
         if not training:
             return _StepOutcome(
-                False, "FAILED",
+                False,
+                "FAILED",
                 errors=["evaluation requires the training step to have run first."],
             )
         if training.get("skipped"):
@@ -771,7 +1046,8 @@ class OrchestratorWorkflow:
             p = Path(pipeline_eval_path)
             if not p.exists():
                 return _StepOutcome(
-                    False, "FAILED",
+                    False,
+                    "FAILED",
                     errors=[f"pipeline_eval_output_path not found on disk: {pipeline_eval_path}"],
                 )
             eval_out = _EvalOut.model_validate(_json.loads(p.read_text(encoding="utf-8")))
@@ -805,7 +1081,8 @@ class OrchestratorWorkflow:
         if inp.evaluation_runner == "azure-ml":
             if azure_config is None:
                 return _StepOutcome(
-                    False, "FAILED",
+                    False,
+                    "FAILED",
                     errors=["azure_config_path is required when evaluation_runner='azure-ml'."],
                 )
             azure_runner = AzureMLEvaluationRunner(azure_config)
@@ -834,6 +1111,8 @@ class OrchestratorWorkflow:
                 "report_path": str(step_dir / "evaluation_report.json"),
                 "output_json_path": str(step_dir / "evaluation_output.json"),
                 "recommendation": str(result.recommendation) if result.recommendation else None,
+                "started_at": result.started_at,
+                "completed_at": result.completed_at,
             },
         )
 
@@ -843,7 +1122,8 @@ class OrchestratorWorkflow:
         evaluation = step_outputs.get("evaluation")
         if not evaluation:
             return _StepOutcome(
-                False, "FAILED",
+                False,
+                "FAILED",
                 errors=["model_decision requires the evaluation step to have run first."],
             )
         if evaluation.get("skipped"):
@@ -883,7 +1163,9 @@ class OrchestratorWorkflow:
             # docstring. Don't even call HumanApprovalAgent; it would just fail with
             # "Non-interactive mode requires --action".
             return _StepOutcome(
-                success=True, status_label="PENDING", pending_approval=True,
+                success=True,
+                status_label="PENDING",
+                pending_approval=True,
                 key_outputs={"approved": False},
             )
 
@@ -929,7 +1211,8 @@ class OrchestratorWorkflow:
         if inp.registry_backend == RegistryBackend.AZURE_ML:
             if azure_config is None:
                 return _StepOutcome(
-                    False, "FAILED",
+                    False,
+                    "FAILED",
                     errors=["azure_config_path is required when registry_backend='azure_ml'."],
                 )
             registry_client = AzureMLModelRegistryClient(azure_config)
@@ -980,7 +1263,8 @@ class OrchestratorWorkflow:
         if inp.deployment_backend == DeploymentBackend.AZURE_ML:
             if azure_config is None:
                 return _StepOutcome(
-                    False, "FAILED",
+                    False,
+                    "FAILED",
                     errors=["azure_config_path is required when deployment_backend='azure_ml'."],
                 )
             azure_model_name = inp.azure_model_name
@@ -996,16 +1280,15 @@ class OrchestratorWorkflow:
                 azure_model_version = registry.get("version")
             if not azure_model_name or azure_model_version is None:
                 return _StepOutcome(
-                    False, "FAILED",
+                    False,
+                    "FAILED",
                     errors=[
                         "azure_model_name and azure_model_version are required for "
                         "deployment_backend='azure_ml' (set them directly, or include "
                         "model_registry with registry_backend='azure_ml' first)."
                     ],
                 )
-            deployer = ModelDeployer(
-                azure_deployer=AzureMLOnlineEndpointDeployer(azure_config)
-            )
+            deployer = ModelDeployer(azure_deployer=AzureMLOnlineEndpointDeployer(azure_config))
             model_path, model_version = None, None
         else:
             azure_model_name, azure_model_version = None, None
@@ -1017,7 +1300,8 @@ class OrchestratorWorkflow:
                 model_version = None
             else:
                 return _StepOutcome(
-                    False, "FAILED",
+                    False,
+                    "FAILED",
                     errors=[
                         "deployment requires either model_registry or training to have "
                         "produced model weights."
@@ -1080,7 +1364,9 @@ class OrchestratorWorkflow:
             if pending_label and nxt == pending_label:
                 return True
             return nxt in (
-                f"{step.upper()}_COMPLETED", f"{step.upper()}_FAILED", f"{step.upper()}_BLOCKED"
+                f"{step.upper()}_COMPLETED",
+                f"{step.upper()}_FAILED",
+                f"{step.upper()}_BLOCKED",
             )
         if prev.endswith("_COMPLETED"):
             step = prev[: -len("_COMPLETED")].lower()
@@ -1126,7 +1412,8 @@ class OrchestratorWorkflow:
         store.save_state(state)
         store.append_audit(
             {
-                "event": "workflow_finished", "status": status.value,
+                "event": "workflow_finished",
+                "status": status.value,
                 "current_state": state.get("current_state"),
             }
         )
@@ -1155,6 +1442,12 @@ class OrchestratorWorkflow:
         )
         output.artifacts += [str(json_path), str(md_path)]
 
+        if self._cost_tracker is not None:
+            cost_path = self._cost_tracker.write_report(
+                state.get("workflow_id", ""), store.workflow_dir / "artifacts"
+            )
+            output.artifacts.append(str(cost_path))
+
         if self._mlflow and mlflow_run_id:
             if self._mlflow_config and self._mlflow_config.log_reports:
                 for p in (str(json_path), str(md_path)):
@@ -1173,13 +1466,25 @@ class OrchestratorWorkflow:
         }
         wf_event = _WORKFLOW_EVENT.get(status)
         if wf_event:
-            self._notify(
-                wf_event,
-                {
-                    "workflow_id": state.get("workflow_id", ""),
-                    "status": status.value,
-                    "message": message,
-                },
-            )
+            notify_payload: dict[str, Any] = {
+                "workflow_id": state.get("workflow_id", ""),
+                "status": status.value,
+                "message": message,
+            }
+            if status == OrchestratorStatus.PENDING_APPROVAL:
+                notify_payload["pending_approval_id"] = pending_approval_id
+                notify_payload["current_state"] = state.get("current_state", "")
+            self._notify(wf_event, notify_payload)
+
+        if self._gh_client is not None and status == OrchestratorStatus.COMPLETED:
+            gh_payload: dict[str, Any] = {
+                "workflow_id": state.get("workflow_id", ""),
+                "status": status.value,
+                "step_outputs": state.get("step_outputs", {}),
+            }
+            try:
+                self._gh_client.trigger("workflow_completed", gh_payload)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning("GitHub Actions trigger failed: %s", exc)
 
         return output

@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block title %}Model Rankings — Registry{% endblock %}
+
+{% block scripts %}
+{% if ranked %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script>
+(function() {
+  const rows = {{ ranked | tojson }};
+  const withMetric = rows.filter(r => r.map50 != null);
+  if (!withMetric.length) return;
+
+  const labels  = withMetric.map(r => r.model_name + ' v' + r.version);
+  const map50   = withMetric.map(r => +(r.map50.toFixed(4)));
+  const map5095 = withMetric.map(r => r.map50_95 != null ? +(r.map50_95.toFixed(4)) : null);
+  const colors  = withMetric.map((r, i) => i === 0 ? 'rgba(255,165,0,.85)' : 'rgba(0,113,227,.55)');
+
+  new Chart(document.getElementById('barChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'mAP50',
+          data: map50,
+          backgroundColor: colors,
+          borderRadius: 5,
+          order: 1,
+        },
+        {
+          label: 'mAP50-95',
+          data: map5095,
+          type: 'line',
+          borderColor: '#34c759',
+          backgroundColor: 'rgba(52,199,89,.12)',
+          pointRadius: 4,
+          tension: 0.3,
+          fill: false,
+          order: 0,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { position: 'bottom' } },
+      scales: {
+        y: { min: 0, max: 1, title: { display: true, text: 'Score' } },
+        x: { ticks: { maxRotation: 35, font: { size: 11 } } }
+      }
+    }
+  });
+
+  // ── Client-side sortable table ──────────────────────────────────────────────
+  (function() {
+    const tbody = document.getElementById('rankBody');
+    if (!tbody) return;
+    document.querySelectorAll('th[data-sort]').forEach(th => {
+      th.style.cursor = 'pointer';
+      th.title = 'Click to sort';
+      th.addEventListener('click', () => {
+        const col = th.dataset.sort;
+        const isNum = th.dataset.num === '1';
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const asc = th.dataset.asc === '1';
+        rows.sort((a, b) => {
+          const av = a.querySelector(`[data-${col}]`)?.dataset[col] ?? '';
+          const bv = b.querySelector(`[data-${col}]`)?.dataset[col] ?? '';
+          if (isNum) {
+            const an = parseFloat(av), bn = parseFloat(bv);
+            if (isNaN(an) && isNaN(bn)) return 0;
+            if (isNaN(an)) return 1;
+            if (isNaN(bn)) return -1;
+            return asc ? an - bn : bn - an;
+          }
+          return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+        });
+        th.dataset.asc = asc ? '0' : '1';
+        document.querySelectorAll('th[data-sort]').forEach(h => h.dataset.asc = '');
+        th.dataset.asc = asc ? '0' : '1';
+        rows.forEach(r => tbody.appendChild(r));
+      });
+    });
+  })();
+})();
+</script>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Model Rankings</h1>
+  <p>
+    All registered versions ranked by mAP50 ·
+    <a href="/registry/compare" class="table-link">Compare two →</a>
+    &nbsp;·&nbsp;
+    <a href="/registry" class="table-link">← Registry</a>
+  </p>
+</div>
+
+{% if winner %}
+<div class="card" style="border-left:4px solid #ffb800; background:linear-gradient(135deg,#fffbf0,#fff);">
+  <div class="card-title" style="color:#b87800">🏆 Best Model</div>
+  <div style="display:flex; align-items:baseline; gap:10px; flex-wrap:wrap">
+    <span style="font-size:20px; font-weight:700">{{ winner.model_name }}</span>
+    <span class="badge badge-default">v{{ winner.version }}</span>
+    {% if winner.map50 is not none %}
+    <span style="font-size:16px; font-weight:600; color:var(--accent)">mAP50 = {{ "%.4f"|format(winner.map50) }}</span>
+    {% endif %}
+    {% if winner.map50_95 is not none %}
+    <span class="muted" style="font-size:13px">mAP50-95 = {{ "%.4f"|format(winner.map50_95) }}</span>
+    {% endif %}
+  </div>
+  {% set wlin = winner.lineage %}
+  <div style="margin-top:10px; font-size:12.5px; color:var(--muted); display:flex; gap:24px; flex-wrap:wrap">
+    {% if wlin.get('precision') is not none %}
+    <span>Precision <strong>{{ "%.4f"|format(wlin.precision) }}</strong></span>
+    {% endif %}
+    {% if wlin.get('recall') is not none %}
+    <span>Recall <strong>{{ "%.4f"|format(wlin.recall) }}</strong></span>
+    {% endif %}
+    {% if wlin.get('approved_by') %}
+    <span>Approved by <strong>{{ wlin.approved_by }}</strong></span>
+    {% endif %}
+    {% if winner.registered_at %}
+    <span>Registered <strong>{{ fmt_dt(winner.registered_at) }}</strong></span>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- Filter -->
+<div class="card" style="padding:14px 20px">
+  <form method="get" action="/registry/rank" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap">
+    <label style="font-size:13px; font-weight:500">Filter by model</label>
+    <select name="model_filter" onchange="this.form.submit()" style="min-width:180px">
+      <option value="">— all models —</option>
+      {% for name in model_names %}
+      <option value="{{ name }}" {{ 'selected' if model_filter == name else '' }}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    {% if model_filter %}
+    <a href="/registry/rank" class="btn" style="font-size:12px; padding:5px 12px">Clear</a>
+    {% endif %}
+    <span class="muted" style="font-size:12px; margin-left:auto">{{ ranked | length }} version{{ 's' if ranked | length != 1 else '' }}</span>
+  </form>
+</div>
+
+{% if ranked %}
+
+<!-- Bar chart -->
+<div class="card">
+  <div class="card-title">mAP50 by Model Version</div>
+  <canvas id="barChart" style="max-height:280px"></canvas>
+</div>
+
+<!-- Rankings table -->
+<div class="card">
+  <div class="card-title">All Versions</div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th data-sort="rank" data-num="1"># ↕</th>
+          <th data-sort="model">Model ↕</th>
+          <th>Ver</th>
+          <th data-sort="map50" data-num="1">mAP50 ↕</th>
+          <th data-sort="map5095" data-num="1">mAP50-95 ↕</th>
+          <th data-sort="precision" data-num="1">Precision ↕</th>
+          <th data-sort="recall" data-num="1">Recall ↕</th>
+          <th>Approved by</th>
+          <th data-sort="registered">Registered ↕</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="rankBody">
+        {% for v in ranked %}
+        {% set lin = v.lineage %}
+        {% set is_winner = v.rank == 1 and not model_filter %}
+        <tr style="{{ 'background:#fffbf0;' if is_winner else '' }}">
+          <td data-rank="{{ v.rank if v.rank else 9999 }}" class="mono">
+            {% if v.rank %}
+              {% if is_winner %}🥇{% elif v.rank == 2 %}🥈{% elif v.rank == 3 %}🥉{% else %}{{ v.rank }}{% endif %}
+            {% else %}—{% endif %}
+          </td>
+          <td data-model="{{ v.model_name }}">
+            <a href="/registry/{{ v.model_name }}" class="table-link">{{ v.model_name }}</a>
+          </td>
+          <td class="mono">v{{ v.version }}</td>
+          <td data-map50="{{ v.map50 if v.map50 is not none else '' }}" class="mono">
+            {% if v.map50 is not none %}
+            <span style="font-weight:{{ '700' if is_winner else '400' }}">{{ "%.4f"|format(v.map50) }}</span>
+            {% else %}—{% endif %}
+          </td>
+          <td data-map5095="{{ v.map50_95 if v.map50_95 is not none else '' }}" class="mono">
+            {{ "%.4f"|format(v.map50_95) if v.map50_95 is not none else "—" }}
+          </td>
+          <td data-precision="{{ v.precision if v.precision is not none else '' }}" class="mono">
+            {{ "%.4f"|format(v.precision) if v.precision is not none else "—" }}
+          </td>
+          <td data-recall="{{ v.recall if v.recall is not none else '' }}" class="mono">
+            {{ "%.4f"|format(v.recall) if v.recall is not none else "—" }}
+          </td>
+          <td class="muted" style="font-size:12px">{{ lin.get('approved_by') or '—' }}</td>
+          <td data-registered="{{ v.registered_at or '' }}" class="muted" style="font-size:12px">
+            {{ fmt_dt(v.registered_at) }}
+          </td>
+          <td>
+            {% set ref = v.model_name + ':' + v.version | string %}
+            <a href="/registry/compare?b={{ ref }}" class="table-link" style="font-size:12px">Compare</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% else %}
+<div class="card">
+  <p class="muted">No registered model versions found.
+    <a href="/registry" class="table-link">Go to Registry →</a>
+  </p>
+</div>
+{% endif %}
+{% endblock %}

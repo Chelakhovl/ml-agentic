@@ -90,8 +90,16 @@ class LabelQAChecker:
                     class_distribution[cls_name] += 1
                     suspicious.extend(
                         _check_geometry(
-                            img_path.name, split, line_num, class_id, cls_name,
-                            xc, yc, w, h, inp,
+                            img_path.name,
+                            split,
+                            line_num,
+                            class_id,
+                            cls_name,
+                            xc,
+                            yc,
+                            w,
+                            h,
+                            inp,
                         )
                     )
 
@@ -148,42 +156,82 @@ class LabelQAChecker:
 
 
 def _check_geometry(
-    image: str, split: str, line_num: int, class_id: int, cls_name: str,
-    xc: float, yc: float, w: float, h: float, inp: LabelQAInput,
+    image: str,
+    split: str,
+    line_num: int,
+    class_id: int,
+    cls_name: str,
+    xc: float,
+    yc: float,
+    w: float,
+    h: float,
+    inp: LabelQAInput,
 ) -> list[SuspiciousSample]:
     issues: list[SuspiciousSample] = []
     bbox = [xc, yc, w, h]
 
     if w < inp.too_small_threshold or h < inp.too_small_threshold:
-        issues.append(SuspiciousSample(
-            image=image, split=split, line=line_num, class_id=class_id, class_name=cls_name,
-            bbox=bbox, issue_type=QAIssueType.BBOX_TOO_SMALL,
-            message=f"{image}:{line_num} bbox too small: width={w:.4f}, height={h:.4f}",
-        ))
+        issues.append(
+            SuspiciousSample(
+                image=image,
+                split=split,
+                line=line_num,
+                class_id=class_id,
+                class_name=cls_name,
+                bbox=bbox,
+                issue_type=QAIssueType.BBOX_TOO_SMALL,
+                message=f"{image}:{line_num} bbox too small: width={w:.4f}, height={h:.4f}",
+            )
+        )
 
     if w > inp.too_large_threshold or h > inp.too_large_threshold:
-        issues.append(SuspiciousSample(
-            image=image, split=split, line=line_num, class_id=class_id, class_name=cls_name,
-            bbox=bbox, issue_type=QAIssueType.BBOX_TOO_LARGE,
-            message=f"{image}:{line_num} bbox too large: width={w:.4f}, height={h:.4f}",
-        ))
+        issues.append(
+            SuspiciousSample(
+                image=image,
+                split=split,
+                line=line_num,
+                class_id=class_id,
+                class_name=cls_name,
+                bbox=bbox,
+                issue_type=QAIssueType.BBOX_TOO_LARGE,
+                message=f"{image}:{line_num} bbox too large: width={w:.4f}, height={h:.4f}",
+            )
+        )
 
     margin = inp.boundary_margin
-    if (xc - w / 2) <= margin or (xc + w / 2) >= (1 - margin) or \
-       (yc - h / 2) <= margin or (yc + h / 2) >= (1 - margin):
-        issues.append(SuspiciousSample(
-            image=image, split=split, line=line_num, class_id=class_id, class_name=cls_name,
-            bbox=bbox, issue_type=QAIssueType.BBOX_NEAR_BOUNDARY,
-            message=f"{image}:{line_num} bbox touches image boundary.",
-        ))
+    if (
+        (xc - w / 2) <= margin
+        or (xc + w / 2) >= (1 - margin)
+        or (yc - h / 2) <= margin
+        or (yc + h / 2) >= (1 - margin)
+    ):
+        issues.append(
+            SuspiciousSample(
+                image=image,
+                split=split,
+                line=line_num,
+                class_id=class_id,
+                class_name=cls_name,
+                bbox=bbox,
+                issue_type=QAIssueType.BBOX_NEAR_BOUNDARY,
+                message=f"{image}:{line_num} bbox touches image boundary.",
+            )
+        )
 
     ratio = max(w, h) / max(min(w, h), 1e-6)
     if ratio > inp.max_aspect_ratio:
-        issues.append(SuspiciousSample(
-            image=image, split=split, line=line_num, class_id=class_id, class_name=cls_name,
-            bbox=bbox, issue_type=QAIssueType.SUSPICIOUS_ASPECT_RATIO,
-            message=f"{image}:{line_num} suspicious aspect ratio: {ratio:.1f}:1",
-        ))
+        issues.append(
+            SuspiciousSample(
+                image=image,
+                split=split,
+                line=line_num,
+                class_id=class_id,
+                class_name=cls_name,
+                bbox=bbox,
+                issue_type=QAIssueType.SUSPICIOUS_ASPECT_RATIO,
+                message=f"{image}:{line_num} suspicious aspect ratio: {ratio:.1f}:1",
+            )
+        )
 
     return issues
 
@@ -198,13 +246,18 @@ def _check_class_imbalance(
     for cls_name, count in class_distribution.items():
         ratio = count / total
         if ratio < inp.class_imbalance_ratio:
-            issues.append(SuspiciousSample(
-                image="", split="", class_name=cls_name, issue_type=QAIssueType.CLASS_IMBALANCE,
-                message=(
-                    f"Class '{cls_name}' has only {ratio:.1%} of total annotations "
-                    f"({count}/{total})."
-                ),
-            ))
+            issues.append(
+                SuspiciousSample(
+                    image="",
+                    split="",
+                    class_name=cls_name,
+                    issue_type=QAIssueType.CLASS_IMBALANCE,
+                    message=(
+                        f"Class '{cls_name}' has only {ratio:.1%} of total annotations "
+                        f"({count}/{total})."
+                    ),
+                )
+            )
     return issues
 
 
@@ -286,14 +339,20 @@ def _compare_with_reference(
         if pi in matched_pred:
             continue
         cls_name = class_names.get(pcls, f"class_{pcls}")
-        issues.append(SuspiciousSample(
-            image=img_path.name, split=split, class_id=pcls, class_name=cls_name,
-            bbox=[pxc, pyc, pw, ph], issue_type=QAIssueType.REFERENCE_MODEL_DISAGREEMENT,
-            message=(
-                f"{img_path.name}: reference model detected '{cls_name}' "
-                f"(conf={pconf:.2f}) with no matching human label — possible missing label."
-            ),
-        ))
+        issues.append(
+            SuspiciousSample(
+                image=img_path.name,
+                split=split,
+                class_id=pcls,
+                class_name=cls_name,
+                bbox=[pxc, pyc, pw, ph],
+                issue_type=QAIssueType.REFERENCE_MODEL_DISAGREEMENT,
+                message=(
+                    f"{img_path.name}: reference model detected '{cls_name}' "
+                    f"(conf={pconf:.2f}) with no matching human label — possible missing label."
+                ),
+            )
+        )
     return issues
 
 

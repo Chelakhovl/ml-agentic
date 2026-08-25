@@ -188,6 +188,7 @@ class AzureMLTrainingRunner:
             from agentic_mlops.integrations.azure_ml_client import (  # noqa: PLC0415
                 DefaultAzureMLClientFactory,
             )
+
             client_factory = DefaultAzureMLClientFactory()
         self._factory = client_factory
 

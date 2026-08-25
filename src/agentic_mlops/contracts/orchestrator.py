@@ -22,6 +22,7 @@ from .common import ToolResult
 from .dataset_structuring import LabelFormat, SplitStrategy
 from .dataset_versioning import DatasetRegistryBackend
 from .deployment import DeploymentBackend, DeploymentTarget, ExportFormat
+from .github_actions import GithubActionsConfig
 from .model_registry import RegistryBackend
 from .notification import NotificationConfig
 from .training_approval import TrainingApprovalAction
@@ -72,6 +73,10 @@ class OrchestratorInput(BaseModel):
     # Which pipeline steps to run, in PIPELINE_STEPS order. None -> DEFAULT_STEPS.
     steps: list[str] | None = None
     resume: bool = False
+    # When set, rewind the saved state so that this step (and all after it) are
+    # treated as not-yet-completed and re-run.  Prior step outputs are preserved
+    # so downstream steps still have their upstream context.  Implies resume=True.
+    resume_from_step: str | None = None
     runs_dir: str = "runs"
     # Root for this run's per-step artifact subdirectories. Defaults to
     # <runs_dir>/<workflow_id>/artifacts.
@@ -126,7 +131,12 @@ class OrchestratorInput(BaseModel):
 
     # ── model_decision ───────────────────────────────────────────────────────
     promotion_policy_path: str | None = None
+    # Explicit path to a previous evaluation_report.json used as the baseline.
+    # Takes priority over auto_baseline when both are set.
     baseline_report_path: str | None = None
+    # When True and baseline_report_path is None, automatically resolve the
+    # best registered model from registry_dir as the baseline after evaluation.
+    auto_baseline: bool = False
     measured_latency_ms: float | None = None
 
     # ── approval ─────────────────────────────────────────────────────────────
@@ -144,6 +154,12 @@ class OrchestratorInput(BaseModel):
     # Optional Teams/Slack webhook notifications for key pipeline events.
     # Set teams_webhook_url and/or slack_webhook_url in orchestrator.yaml.
     notifications: NotificationConfig | None = None
+
+    # ── CI/CD trigger ─────────────────────────────────────────────────────────
+    # Trigger a GitHub Actions workflow_dispatch after successful completion.
+    # Requires a PAT with actions:write scope; set in orchestrator.yaml or via
+    # the GITHUB_ACTIONS_TOKEN env var.  See configs/orchestrator.example.yaml.
+    github_actions: GithubActionsConfig | None = None
 
     # ── deployment ───────────────────────────────────────────────────────────
     deployment_target: DeploymentTarget = DeploymentTarget.STAGING

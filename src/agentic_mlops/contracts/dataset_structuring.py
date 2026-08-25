@@ -12,6 +12,7 @@ from .common import ToolResult
 class LabelFormat(StrEnum):
     YOLO = "yolo"
     COCO = "coco"
+    VOC = "voc"
 
 
 class SplitStrategy(StrEnum):
@@ -27,6 +28,9 @@ class DatasetStructuringInput(BaseModel):
     label_format: LabelFormat = LabelFormat.YOLO
     # Required when label_format == "coco"; a single COCO-style annotations JSON file.
     coco_annotations_path: str | None = None
+    # Optional when label_format == "voc"; directory containing per-image Pascal VOC XML
+    # files.  Defaults to <raw_data_path>/Annotations/ or <raw_data_path>/ if absent.
+    voc_annotations_dir: str | None = None
 
     split_strategy: SplitStrategy = SplitStrategy.RANDOM
     train_ratio: float = Field(default=0.8, ge=0.0, lt=1.0)

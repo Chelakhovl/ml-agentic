@@ -171,9 +171,7 @@ def test_critical_class_low_recall_produces_need_label_review(tmp_path: Path) ->
         artifacts_dir=tmp_path / "eval_out",
         dry_run_override_metrics=metrics,
     )
-    result = agent.run(
-        _make_input(tmp_path, promotion_policy_path=str(policy_path))
-    )
+    result = agent.run(_make_input(tmp_path, promotion_policy_path=str(policy_path)))
 
     assert result.recommendation == EvaluationRecommendation.NEED_LABEL_REVIEW
 

@@ -154,9 +154,7 @@ def test_traffic_routed_100_percent_to_new_deployment(tmp_path: Path) -> None:
 
 def test_custom_instance_type_and_count_used(tmp_path: Path) -> None:
     factory = FakeAzureMLClientFactory()
-    cfg = _minimal_azure_config(
-        serving={"instance_type": "Standard_DS3_v2", "instance_count": 2}
-    )
+    cfg = _minimal_azure_config(serving={"instance_type": "Standard_DS3_v2", "instance_count": 2})
     deployer = AzureMLOnlineEndpointDeployer(cfg, client_factory=factory)
     _deploy(deployer, _make_deployment_input(), tmp_path)
 

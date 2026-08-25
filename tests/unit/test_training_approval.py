@@ -109,9 +109,7 @@ def test_failed_validation_cannot_be_approved_even_with_force(tmp_path: Path) ->
     report = _write_dataset_report(tmp_path / "validation", status="failed")
     agent = TrainingApprovalAgent(artifacts_dir=tmp_path / "out")
     result = agent.run(
-        _make_input(
-            report, tmp_path / "out", TrainingApprovalAction.APPROVE_TRAINING, force=True
-        )
+        _make_input(report, tmp_path / "out", TrainingApprovalAction.APPROVE_TRAINING, force=True)
     )
 
     assert result.success is False
@@ -124,9 +122,7 @@ def test_warning_status_blocked_without_force(tmp_path: Path) -> None:
     )
     agent = TrainingApprovalAgent(artifacts_dir=tmp_path / "out")
     result = agent.run(
-        _make_input(
-            report, tmp_path / "out", TrainingApprovalAction.APPROVE_TRAINING, force=False
-        )
+        _make_input(report, tmp_path / "out", TrainingApprovalAction.APPROVE_TRAINING, force=False)
     )
 
     assert result.success is False
@@ -137,9 +133,7 @@ def test_warning_status_succeeds_with_force(tmp_path: Path) -> None:
     report = _write_dataset_report(tmp_path / "validation", status="warning")
     agent = TrainingApprovalAgent(artifacts_dir=tmp_path / "out")
     result = agent.run(
-        _make_input(
-            report, tmp_path / "out", TrainingApprovalAction.APPROVE_TRAINING, force=True
-        )
+        _make_input(report, tmp_path / "out", TrainingApprovalAction.APPROVE_TRAINING, force=True)
     )
 
     assert result.success is True
@@ -187,9 +181,7 @@ def test_decision_md_is_created(tmp_path: Path) -> None:
     out_dir = tmp_path / "out"
     agent = TrainingApprovalAgent(artifacts_dir=out_dir)
     result = agent.run(
-        _make_input(
-            report, out_dir, TrainingApprovalAction.APPROVE_TRAINING, comment="Looks good"
-        )
+        _make_input(report, out_dir, TrainingApprovalAction.APPROVE_TRAINING, comment="Looks good")
     )
 
     md_file = out_dir / "training_approval_decision.md"
@@ -210,11 +202,15 @@ def test_cli_non_interactive_mode(tmp_path: Path) -> None:
         [
             "approve-training",
             str(report),
-            "--output-dir", str(out_dir),
-            "--approver", "CI",
+            "--output-dir",
+            str(out_dir),
+            "--approver",
+            "CI",
             "--no-interactive",
-            "--action", "reject_training",
-            "--comment", "Automated test",
+            "--action",
+            "reject_training",
+            "--comment",
+            "Automated test",
         ],
     )
 
@@ -234,7 +230,8 @@ def test_cli_invalid_action_exits_1(tmp_path: Path) -> None:
             "approve-training",
             str(report),
             "--no-interactive",
-            "--action", "bogus",
+            "--action",
+            "bogus",
         ],
     )
     assert result.exit_code == 1

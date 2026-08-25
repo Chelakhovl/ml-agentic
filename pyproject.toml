@@ -56,6 +56,12 @@ select = ["E", "F", "I", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+filterwarnings = [
+    # Azure ML SDK uses marshmallow internals that emit version-migration
+    # warnings on every import — not actionable, so suppress them globally.
+    "ignore::marshmallow.warnings.RemovedInMarshmallow4Warning",
+    "ignore::marshmallow.warnings.ChangedInMarshmallow4Warning",
+]
 markers = [
     "azure_integration: requires a real Azure ML workspace + credentials (az login or service principal env vars). Opt-in only -- automatically skipped unless --azure-config is passed. Run with: pytest tests/integration -m azure_integration --azure-config configs/azure_ml.yaml",
 ]

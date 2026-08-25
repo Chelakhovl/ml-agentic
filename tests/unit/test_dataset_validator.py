@@ -68,6 +68,7 @@ def test_missing_data_yaml_fails(tmp_path: Path, validator: DatasetValidator) ->
 def test_missing_images_train_dir_fails(tmp_path: Path, validator: DatasetValidator) -> None:
     make_valid_dataset(tmp_path)
     import shutil
+
     shutil.rmtree(tmp_path / "images" / "train")
 
     result = _validate(validator, tmp_path)
@@ -147,6 +148,7 @@ def test_cross_split_duplicates_fail(tmp_path: Path, validator: DatasetValidator
     make_valid_dataset(tmp_path)
     # Copy a train image into val (same bytes → same hash)
     import shutil
+
     src = tmp_path / "images" / "train" / "img_train_000.jpg"
     dst = tmp_path / "images" / "val" / "img_train_000.jpg"  # same name, same bytes
     shutil.copy(src, dst)

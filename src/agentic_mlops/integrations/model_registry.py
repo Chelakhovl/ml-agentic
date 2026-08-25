@@ -125,9 +125,7 @@ def _resolve_best_weights_path(inp: ModelRegistrationInput) -> Path:
     train_data = json.loads(Path(inp.training_output_path).read_text(encoding="utf-8"))
     src_weights_str = train_data.get("best_weights_path")
     if not src_weights_str:
-        raise FileNotFoundError(
-            "best.pt not found and not referenced in training_output.json"
-        )
+        raise FileNotFoundError("best.pt not found and not referenced in training_output.json")
     src_weights = Path(src_weights_str)
     if not src_weights.exists():
         raise FileNotFoundError(f"best.pt not found at '{src_weights}'")
@@ -161,8 +159,7 @@ class ModelRegistryClientBase(ABC):
         inp: ModelRegistrationInput,
         lineage: ModelLineage,
         artifacts_dir: Path,
-    ) -> ModelRegistrationOutput:
-        ...
+    ) -> ModelRegistrationOutput: ...
 
 
 class LocalModelRegistryClient(ModelRegistryClientBase):
@@ -211,9 +208,7 @@ class LocalModelRegistryClient(ModelRegistryClientBase):
             src_hash = _sha256(src_weights)
             dst_hash = _sha256(dst_weights)
             if src_hash != dst_hash:
-                raise RuntimeError(
-                    f"SHA-256 mismatch after copy: src={src_hash} dst={dst_hash}"
-                )
+                raise RuntimeError(f"SHA-256 mismatch after copy: src={src_hash} dst={dst_hash}")
 
             # Write lineage.json
             lineage_path = version_dir / "lineage.json"
@@ -476,9 +471,7 @@ class MLflowModelRegistryClient(ModelRegistryClientBase):
             return output
 
         except Exception as exc:
-            logger.error(
-                "MLflowModelRegistryClient registration failed", extra={"error": str(exc)}
-            )
+            logger.error("MLflowModelRegistryClient registration failed", extra={"error": str(exc)})
             return ModelRegistrationOutput(
                 success=False,
                 message=f"MLflow registration failed: {exc}",
@@ -507,6 +500,7 @@ class AzureMLModelRegistryClient(ModelRegistryClientBase):
             from agentic_mlops.integrations.azure_ml_client import (  # noqa: PLC0415
                 DefaultAzureMLClientFactory,
             )
+
             client_factory = DefaultAzureMLClientFactory()
         self._factory = client_factory
 

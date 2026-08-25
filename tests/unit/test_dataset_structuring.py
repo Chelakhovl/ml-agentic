@@ -25,6 +25,7 @@ Coverage matrix:
 from __future__ import annotations
 
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -279,10 +280,10 @@ def test_coco_bbox_converted_correctly(tmp_path: Path) -> None:
     assert len(label_files) == 1
     parts = label_files[0].read_text(encoding="utf-8").strip().split()
     assert parts[0] == "1"  # index of 'dent' in classes
-    assert float(parts[1]) == pytest.approx(0.25)   # xc
-    assert float(parts[2]) == pytest.approx(0.20)   # yc
-    assert float(parts[3]) == pytest.approx(0.30)   # w
-    assert float(parts[4]) == pytest.approx(0.20)   # h
+    assert float(parts[1]) == pytest.approx(0.25)  # xc
+    assert float(parts[2]) == pytest.approx(0.20)  # yc
+    assert float(parts[3]) == pytest.approx(0.30)  # w
+    assert float(parts[4]) == pytest.approx(0.20)  # h
 
 
 def test_coco_unknown_category_skipped_with_warning(tmp_path: Path) -> None:
@@ -422,8 +423,10 @@ def test_cli_structure_dataset_succeeds(tmp_path: Path) -> None:
         [
             "structure-dataset",
             str(raw),
-            "--output-dataset-path", str(tmp_path / "out"),
-            "--classes", "scratch,dent",
+            "--output-dataset-path",
+            str(tmp_path / "out"),
+            "--classes",
+            "scratch,dent",
         ],
     )
 
@@ -441,8 +444,10 @@ def test_cli_structure_dataset_exits_1_on_missing_path(tmp_path: Path) -> None:
         [
             "structure-dataset",
             str(tmp_path / "nonexistent"),
-            "--output-dataset-path", str(tmp_path / "out"),
-            "--classes", "a",
+            "--output-dataset-path",
+            str(tmp_path / "out"),
+            "--classes",
+            "a",
         ],
     )
 
@@ -462,11 +467,177 @@ def test_cli_structure_dataset_exits_1_on_invalid_label_format(tmp_path: Path) -
         [
             "structure-dataset",
             str(raw),
-            "--output-dataset-path", str(tmp_path / "out"),
-            "--classes", "a",
-            "--label-format", "bogus",
+            "--output-dataset-path",
+            str(tmp_path / "out"),
+            "--classes",
+            "a",
+            "--label-format",
+            "bogus",
         ],
     )
 
     assert result.exit_code == 1
     assert "Invalid label-format" in result.output
+
+
+# ── VOC helpers & tests ────────────────────────────────────────────────────────
+
+
+def _write_voc_xml(
+    annotations_dir: Path,
+    image_name: str,
+    width: int,
+    height: int,
+    objects: list[dict],  # [{"name": str, "xmin": int, "ymin": int, "xmax": int, "ymax": int}]
+) -> None:
+    """Write a minimal Pascal VOC XML annotation file."""
+    ann = ET.Element("annotation")
+    ET.SubElement(ann, "filename").text = image_name
+    size = ET.SubElement(ann, "size")
+    ET.SubElement(size, "width").text = str(width)
+    ET.SubElement(size, "height").text = str(height)
+    ET.SubElement(size, "depth").text = "3"
+    for obj in objects:
+        o = ET.SubElement(ann, "object")
+        ET.SubElement(o, "name").text = obj["name"]
+        bb = ET.SubElement(o, "bndbox")
+        ET.SubElement(bb, "xmin").text = str(obj["xmin"])
+        ET.SubElement(bb, "ymin").text = str(obj["ymin"])
+        ET.SubElement(bb, "xmax").text = str(obj["xmax"])
+        ET.SubElement(bb, "ymax").text = str(obj["ymax"])
+    stem = Path(image_name).stem
+    ET.ElementTree(ann).write(annotations_dir / f"{stem}.xml", encoding="unicode")
+
+
+def test_voc_bbox_converted_correctly(tmp_path: Path) -> None:
+    """VOC xmin/ymin/xmax/ymax (absolute) → normalised YOLO xc/yc/w/h."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    ann_dir = raw / "Annotations"
+    ann_dir.mkdir()
+    Image.new("RGB", (100, 200)).save(raw / "img1.jpg")
+    _write_voc_xml(
+        ann_dir,
+        "img1.jpg",
+        width=100,
+        height=200,
+        objects=[{"name": "dent", "xmin": 10, "ymin": 20, "xmax": 40, "ymax": 60}],
+    )
+
+    result = DatasetStructurer().structure(
+        DatasetStructuringInput(
+            raw_data_path=str(raw),
+            output_dataset_path=str(tmp_path / "out"),
+            classes=["scratch", "dent", "crack"],
+            label_format=LabelFormat.VOC,
+            train_ratio=1e-9,
+            val_ratio=1.0 - 2e-9,
+            test_ratio=1e-9,
+        )
+    )
+
+    assert result.success is True
+    label_files = list((tmp_path / "out" / "labels").rglob("*.txt"))
+    assert len(label_files) == 1
+    parts = label_files[0].read_text(encoding="utf-8").strip().split()
+    assert parts[0] == "1"  # index of 'dent'
+    assert float(parts[1]) == pytest.approx(0.25)  # xc = (10+40)/2 / 100
+    assert float(parts[2]) == pytest.approx(0.20)  # yc = (20+60)/2 / 200
+    assert float(parts[3]) == pytest.approx(0.30)  # w  = (40-10) / 100
+    assert float(parts[4]) == pytest.approx(0.20)  # h  = (60-20) / 200
+
+
+def test_voc_unknown_class_skipped_with_warning(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    Image.new("RGB", (100, 100)).save(raw / "img1.jpg")
+    _write_voc_xml(
+        raw,
+        "img1.jpg",
+        width=100,
+        height=100,
+        objects=[{"name": "UNKNOWN_CLASS", "xmin": 5, "ymin": 5, "xmax": 50, "ymax": 50}],
+    )
+
+    result = DatasetStructurer().structure(
+        DatasetStructuringInput(
+            raw_data_path=str(raw),
+            output_dataset_path=str(tmp_path / "out"),
+            classes=["scratch", "dent"],
+            label_format=LabelFormat.VOC,
+            train_ratio=1e-9,
+            val_ratio=1.0 - 2e-9,
+            test_ratio=1e-9,
+        )
+    )
+
+    assert result.success is True
+    assert any("UNKNOWN_CLASS" in w for w in result.warnings)
+    # Image still written, but label file should be empty
+    label_files = list((tmp_path / "out" / "labels").rglob("*.txt"))
+    assert len(label_files) == 1
+    assert label_files[0].read_text(encoding="utf-8").strip() == ""
+
+
+def test_voc_missing_image_skipped_with_warning(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    # Write XML but no image file on disk
+    _write_voc_xml(
+        raw,
+        "ghost.jpg",
+        width=100,
+        height=100,
+        objects=[{"name": "scratch", "xmin": 1, "ymin": 1, "xmax": 10, "ymax": 10}],
+    )
+
+    result = DatasetStructurer().structure(
+        DatasetStructuringInput(
+            raw_data_path=str(raw),
+            output_dataset_path=str(tmp_path / "out"),
+            classes=["scratch"],
+            label_format=LabelFormat.VOC,
+            train_ratio=1e-9,
+            val_ratio=1.0 - 2e-9,
+            test_ratio=1e-9,
+        )
+    )
+
+    # No images at all → failed
+    assert result.success is False
+    assert any("ghost.jpg" in w or "not found" in w for w in result.warnings)
+
+
+def test_voc_explicit_annotations_dir(tmp_path: Path) -> None:
+    """--voc-annotations-dir explicitly overrides the default Annotations/ lookup."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    custom_ann = tmp_path / "my_annotations"
+    custom_ann.mkdir()
+    Image.new("RGB", (80, 80)).save(raw / "photo.jpg")
+    _write_voc_xml(
+        custom_ann,
+        "photo.jpg",
+        width=80,
+        height=80,
+        objects=[{"name": "crack", "xmin": 0, "ymin": 0, "xmax": 40, "ymax": 40}],
+    )
+
+    result = DatasetStructurer().structure(
+        DatasetStructuringInput(
+            raw_data_path=str(raw),
+            output_dataset_path=str(tmp_path / "out"),
+            classes=["crack"],
+            label_format=LabelFormat.VOC,
+            voc_annotations_dir=str(custom_ann),
+            train_ratio=1e-9,
+            val_ratio=1.0 - 2e-9,
+            test_ratio=1e-9,
+        )
+    )
+
+    assert result.success is True
+    label_files = list((tmp_path / "out" / "labels").rglob("*.txt"))
+    assert len(label_files) == 1
+    parts = label_files[0].read_text(encoding="utf-8").strip().split()
+    assert parts[0] == "0"  # 'crack' is class index 0

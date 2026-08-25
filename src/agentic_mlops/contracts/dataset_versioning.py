@@ -17,7 +17,7 @@ class DatasetVersionStatus(StrEnum):
 
 
 class DatasetRegistryBackend(StrEnum):
-    LOCAL = "local"        # filesystem registry with hash-based dedup
+    LOCAL = "local"  # filesystem registry with hash-based dedup
     AZURE_ML = "azure_ml"  # real Azure ML Data asset (no local dedup — Azure owns versioning)
 
 
@@ -48,6 +48,9 @@ class DatasetLineage(BaseModel):
     label_qa_status: str | None = None
     registered_at: str
     source_dataset_path: str | None = None
+    # Quality metrics extracted from the validation report at registration time.
+    # Present only when validation_report_path was provided to DatasetVersioningAgent.
+    quality_summary: dict | None = None
 
 
 class DatasetVersioningOutput(ToolResult):

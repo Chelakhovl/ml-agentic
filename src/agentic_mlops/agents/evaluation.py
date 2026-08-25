@@ -115,11 +115,14 @@ class EvaluationAgent(BaseAgent):
             metrics[f"evaluation.class.{safe}.map50"] = pcm.map50
         client.log_metrics(rid, metrics)
 
-        client.log_tags(rid, {
-            "workflow_step": "evaluation",
-            "evaluation_runner": str(output.runner or inp.mode),
-            "recommendation": str(output.recommendation or "none"),
-        })
+        client.log_tags(
+            rid,
+            {
+                "workflow_step": "evaluation",
+                "evaluation_runner": str(output.runner or inp.mode),
+                "recommendation": str(output.recommendation or "none"),
+            },
+        )
 
         for artifact_path in output.artifacts:
             client.log_artifact(rid, artifact_path)

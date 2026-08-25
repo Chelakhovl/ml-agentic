@@ -117,9 +117,7 @@ class DatasetVersioningAgent(BaseAgent):
             try:
                 ldata = _load_json(input.label_quality_report_path)
             except (OSError, json.JSONDecodeError) as exc:
-                return _failed(
-                    f"Cannot read label_quality_report_path: {exc}", input.dataset_name
-                )
+                return _failed(f"Cannot read label_quality_report_path: {exc}", input.dataset_name)
             label_qa_status = ldata.get("status")
             if label_qa_status == "failed":
                 return _blocked(
@@ -156,9 +154,7 @@ class DatasetVersioningAgent(BaseAgent):
         )
         return output
 
-    def _log_to_mlflow(
-        self, inp: DatasetVersioningInput, output: DatasetVersioningOutput
-    ) -> None:
+    def _log_to_mlflow(self, inp: DatasetVersioningInput, output: DatasetVersioningOutput) -> None:
         rid = self._mlflow_run_id
         client = self._mlflow
         assert rid is not None and client is not None
@@ -171,12 +167,15 @@ class DatasetVersioningAgent(BaseAgent):
             params["dataset_versioning.hash"] = output.hash[:16]
         client.log_params(rid, params)
 
-        client.log_tags(rid, {
-            "workflow_step": "dataset_versioning",
-            "dataset_versioning_status": str(output.status),
-            "dataset_name": inp.dataset_name,
-            "dataset_version": str(output.version),
-        })
+        client.log_tags(
+            rid,
+            {
+                "workflow_step": "dataset_versioning",
+                "dataset_versioning_status": str(output.status),
+                "dataset_name": inp.dataset_name,
+                "dataset_version": str(output.version),
+            },
+        )
 
         for artifact_path in output.artifacts:
             client.log_artifact(rid, artifact_path)

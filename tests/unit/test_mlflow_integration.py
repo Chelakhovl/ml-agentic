@@ -366,9 +366,7 @@ class TestDatasetValidationAgentMLflow:
         (tmp_path / "ds").mkdir(parents=True, exist_ok=True)
         make_valid_dataset(tmp_path / "ds")
         agent = DatasetValidationAgent(artifacts_dir=tmp_path / "artifacts")
-        result = agent.run(
-            DatasetValidationInput(dataset_path=str(tmp_path / "ds"))
-        )
+        result = agent.run(DatasetValidationInput(dataset_path=str(tmp_path / "ds")))
         assert result.success is True
 
     def test_no_mlflow_call_when_run_id_is_none(self, tmp_path: Path) -> None:

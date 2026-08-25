@@ -340,9 +340,7 @@ def test_azure_training_runner_wired_into_default_training_agent(
         calls.append(artifacts_dir)
         return _train_ok()
 
-    monkeypatch.setattr(
-        "agentic_mlops.tools.training_runner.AzureMLTrainingRunner.run", fake_run
-    )
+    monkeypatch.setattr("agentic_mlops.tools.training_runner.AzureMLTrainingRunner.run", fake_run)
 
     cfg_path = _make_training_config(tmp_path / "train.yaml")
     out_dir = tmp_path / "out"
@@ -387,12 +385,18 @@ def test_cli_run_mvp_dry_run(tmp_path: Path) -> None:
         app,
         [
             "run-mvp",
-            "--dataset-path", str(ds_dir),
-            "--data-yaml", str(data_yaml),
-            "--training-config", str(cfg_path),
-            "--output-dir", str(out_dir),
-            "--approver", "CI",
-            "--approval-action", "request_retraining",
+            "--dataset-path",
+            str(ds_dir),
+            "--data-yaml",
+            str(data_yaml),
+            "--training-config",
+            str(cfg_path),
+            "--output-dir",
+            str(out_dir),
+            "--approver",
+            "CI",
+            "--approval-action",
+            "request_retraining",
             "--dry-run",
             "--no-interactive",
         ],

@@ -440,7 +440,11 @@ def test_manifest_contains_rollback_plan(tmp_path: Path) -> None:
     )
 
     manifest_path = (
-        tmp_path / "deployments" / "m-production" / "releases" / str(result.release)
+        tmp_path
+        / "deployments"
+        / "m-production"
+        / "releases"
+        / str(result.release)
         / "deployment_manifest.json"
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -523,9 +527,12 @@ def test_cli_deploy_model_staging_succeeds(tmp_path: Path) -> None:
         [
             "deploy-model",
             str(weights),
-            "--model-name", "m",
-            "--export-format", "pt",
-            "--deployment-dir", str(tmp_path / "deployments"),
+            "--model-name",
+            "m",
+            "--export-format",
+            "pt",
+            "--deployment-dir",
+            str(tmp_path / "deployments"),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -542,8 +549,10 @@ def test_cli_deploy_model_exits_1_on_missing_path(tmp_path: Path) -> None:
         [
             "deploy-model",
             str(tmp_path / "nope.pt"),
-            "--model-name", "m",
-            "--deployment-dir", str(tmp_path / "deployments"),
+            "--model-name",
+            "m",
+            "--deployment-dir",
+            str(tmp_path / "deployments"),
         ],
     )
     assert result.exit_code == 1
@@ -561,10 +570,14 @@ def test_cli_deploy_model_exits_1_on_production_without_gate(tmp_path: Path) -> 
         [
             "deploy-model",
             str(weights),
-            "--model-name", "m",
-            "--export-format", "pt",
-            "--target", "production",
-            "--deployment-dir", str(tmp_path / "deployments"),
+            "--model-name",
+            "m",
+            "--export-format",
+            "pt",
+            "--target",
+            "production",
+            "--deployment-dir",
+            str(tmp_path / "deployments"),
         ],
     )
     assert result.exit_code == 1
@@ -583,8 +596,10 @@ def test_cli_deploy_model_exits_1_on_invalid_target(tmp_path: Path) -> None:
         [
             "deploy-model",
             str(weights),
-            "--model-name", "m",
-            "--target", "bogus",
+            "--model-name",
+            "m",
+            "--target",
+            "bogus",
         ],
     )
     assert result.exit_code == 1
@@ -603,8 +618,10 @@ def test_cli_deploy_model_exits_1_on_invalid_export_format(tmp_path: Path) -> No
         [
             "deploy-model",
             str(weights),
-            "--model-name", "m",
-            "--export-format", "bogus",
+            "--model-name",
+            "m",
+            "--export-format",
+            "bogus",
         ],
     )
     assert result.exit_code == 1
@@ -639,16 +656,21 @@ def test_azure_backend_without_injected_deployer_fails(tmp_path: Path) -> None:
 
 def test_azure_backend_delegates_to_injected_deployer(tmp_path: Path) -> None:
     fake_output = DeploymentOutput(
-        success=True, message="ok", status=DeploymentStatus.DEPLOYED_TO_STAGING,
-        endpoint_name="m-staging", scoring_uri="https://fake/score",
+        success=True,
+        message="ok",
+        status=DeploymentStatus.DEPLOYED_TO_STAGING,
+        endpoint_name="m-staging",
+        scoring_uri="https://fake/score",
     )
     fake_azure = _FakeAzureDeployer(fake_output)
     deployer = ModelDeployer(azure_deployer=fake_azure)
 
     result = deployer.deploy(
         DeploymentInput(
-            model_name="m", backend=DeploymentBackend.AZURE_ML,
-            azure_model_name="m-model", azure_model_version=1,
+            model_name="m",
+            backend=DeploymentBackend.AZURE_ML,
+            azure_model_name="m-model",
+            azure_model_version=1,
         ),
         tmp_path / "artifacts",
     )
@@ -664,8 +686,10 @@ def test_azure_backend_still_enforces_h6_production_gate(tmp_path: Path) -> None
 
     result = deployer.deploy(
         DeploymentInput(
-            model_name="m", backend=DeploymentBackend.AZURE_ML,
-            azure_model_name="m-model", azure_model_version=1,
+            model_name="m",
+            backend=DeploymentBackend.AZURE_ML,
+            azure_model_name="m-model",
+            azure_model_version=1,
             target=DeploymentTarget.PRODUCTION,
         )
     )

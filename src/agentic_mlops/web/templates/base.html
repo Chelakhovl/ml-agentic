@@ -23,6 +23,21 @@
       --sidebar-w: 220px;
       --radius:   12px;
       --shadow:   0 1px 4px rgba(0,0,0,.07);
+      --sidebar-bg: var(--surface);
+    }
+
+    [data-theme="dark"] {
+      --bg:       #1c1c1e;
+      --surface:  #2c2c2e;
+      --border:   #3a3a3c;
+      --text:     #f2f2f7;
+      --muted:    #8e8e93;
+      --accent:   #0a84ff;
+      --accent-h: #409cff;
+      --green:    #30d158;
+      --orange:   #ff9f0a;
+      --red:      #ff453a;
+      --shadow:   0 1px 4px rgba(0,0,0,.35);
     }
 
     html, body { height: 100%; }
@@ -398,8 +413,11 @@
       <a href="/workflows/new" class="{{ 'active' if request.url.path == '/workflows/new' else '' }}">
         <span class="nav-icon">＋</span> New Run
       </a>
-      <a href="/registry" class="{{ 'active' if request.url.path.startswith('/registry') else '' }}">
+      <a href="/registry" class="{{ 'active' if request.url.path.startswith('/registry') and request.url.path != '/registry/rank' else '' }}">
         <span class="nav-icon">📦</span> Registry
+      </a>
+      <a href="/registry/rank" class="{{ 'active' if request.url.path == '/registry/rank' else '' }}" style="padding-left:28px; font-size:13px">
+        <span class="nav-icon">🏆</span> Model Rank
       </a>
       <a href="/datasets" class="{{ 'active' if request.url.path.startswith('/datasets') else '' }}">
         <span class="nav-icon">🗂</span> Datasets
@@ -407,8 +425,25 @@
       <a href="/monitoring" class="{{ 'active' if request.url.path == '/monitoring' else '' }}">
         <span class="nav-icon">📊</span> Monitoring
       </a>
+      <a href="/monitoring/hard-samples" class="{{ 'active' if request.url.path == '/monitoring/hard-samples' else '' }}" style="padding-left:28px; font-size:13px">
+        <span class="nav-icon">🔴</span> Hard Samples
+      </a>
+      <a href="/workflows/compare" class="{{ 'active' if request.url.path == '/workflows/compare' else '' }}">
+        <span class="nav-icon">⇄</span> Compare Runs
+      </a>
+      <a href="/costs" class="{{ 'active' if request.url.path == '/costs' else '' }}">
+        <span class="nav-icon">💰</span> Costs
+      </a>
+      <a href="/workflows/prune" class="{{ 'active' if request.url.path == '/workflows/prune' else '' }}">
+        <span class="nav-icon">🗑</span> Prune Runs
+      </a>
     </div>
-    <div class="sidebar-footer">agentic-mlops</div>
+    <div class="sidebar-footer" style="display:flex;align-items:center;justify-content:space-between">
+      <span>agentic-mlops</span>
+      <button id="darkToggle" title="Toggle dark mode"
+        onclick="toggleDark()"
+        style="background:none;border:none;cursor:pointer;font-size:16px;padding:4px;color:var(--muted)">🌙</button>
+    </div>
   </nav>
 
   <main class="main">
@@ -418,6 +453,24 @@
     {% block content %}{% endblock %}
   </main>
 
+  <script>
+    // Dark mode
+    (function() {
+      const saved = localStorage.getItem('theme');
+      if (saved === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    })();
+    function toggleDark() {
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      const next = isDark ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      document.getElementById('darkToggle').textContent = next === 'dark' ? '☀️' : '🌙';
+    }
+    document.addEventListener('DOMContentLoaded', function() {
+      const btn = document.getElementById('darkToggle');
+      if (btn && document.documentElement.getAttribute('data-theme') === 'dark') btn.textContent = '☀️';
+    });
+  </script>
   <script>
     // Copy button helper
     document.addEventListener('click', (e) => {

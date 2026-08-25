@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% block title %}Compare Runs — MLOps{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Compare Runs</h1>
+  <p>Side-by-side diff of two workflow runs</p>
+</div>
+
+<!-- Selector form -->
+<div class="card" style="margin-bottom:20px">
+  <div class="card-title">Select Workflows</div>
+  <form method="get" action="/workflows/compare" style="display:flex; gap:14px; align-items:flex-end; flex-wrap:wrap">
+    <div>
+      <label style="font-size:11px; margin-bottom:4px">Run A (baseline)</label>
+      <select name="a" style="width:220px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; font-size:13px; background:var(--surface)">
+        <option value="">— select —</option>
+        {% for wf in workflows %}
+        <option value="{{ wf.workflow_id }}" {{ 'selected' if wf.workflow_id == ref_a else '' }}>
+          {{ wf.workflow_id }} ({{ wf.get('status','?') }})
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label style="font-size:11px; margin-bottom:4px">Run B (new)</label>
+      <select name="b" style="width:220px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; font-size:13px; background:var(--surface)">
+        <option value="">— select —</option>
+        {% for wf in workflows %}
+        <option value="{{ wf.workflow_id }}" {{ 'selected' if wf.workflow_id == ref_b else '' }}>
+          {{ wf.workflow_id }} ({{ wf.get('status','?') }})
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary">Compare →</button>
+    {% if ref_a and ref_b %}
+    <a href="/workflows/compare" class="btn btn-secondary">Clear</a>
+    {% endif %}
+  </form>
+</div>
+
+{% if error %}
+<div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
+{% if diff %}
+<!-- Summary header -->
+<div class="stat-row" style="margin-bottom:20px">
+  <div class="stat-card {{ 'green' if diff.status_a == 'completed' else ('red' if diff.status_a == 'failed' else 'orange') }}">
+    <div class="stat-label">{{ diff.wf_a }} Status</div>
+    <div class="stat-value" style="font-size:18px">{{ diff.status_a }}</div>
+    <div class="muted" style="font-size:11px; margin-top:4px">{{ fmt_dt(diff.started_at_a) }}</div>
+  </div>
+  <div class="stat-card {{ 'green' if diff.status_b == 'completed' else ('red' if diff.status_b == 'failed' else 'orange') }}">
+    <div class="stat-label">{{ diff.wf_b }} Status</div>
+    <div class="stat-value" style="font-size:18px">{{ diff.status_b }}</div>
+    <div class="muted" style="font-size:11px; margin-top:4px">{{ fmt_dt(diff.started_at_b) }}</div>
+  </div>
+  <div class="stat-card {{ 'red' if diff.has_changes else 'green' }}">
+    <div class="stat-label">Changes</div>
+    <div class="stat-value" style="font-size:18px">{{ 'Yes' if diff.has_changes else 'None' }}</div>
+  </div>
+</div>
+
+<div class="two-col">
+
+<!-- Step diff -->
+<div class="card">
+  <div class="card-title">Step Status Diff</div>
+  {% if diff.step_diffs %}
+  <div class="table-wrap">
+  <table style="font-size:13px">
+    <thead>
+      <tr>
+        <th>Step</th>
+        <th>{{ diff.wf_a }}</th>
+        <th>{{ diff.wf_b }}</th>
+        <th>Changed</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for s in diff.step_diffs %}
+    <tr {{ 'style="background:#fffbf0"' if s.changed else '' }}>
+      <td class="mono" style="font-size:12px">{{ step_icon(s.name) }} {{ s.name }}</td>
+      <td>
+        {% if s.status_a %}
+        <span class="badge {{ status_class(s.status_a) }}">{{ s.status_a }}</span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td>
+        {% if s.status_b %}
+        <span class="badge {{ status_class(s.status_b) }}">{{ s.status_b }}</span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td>{% if s.changed %}<span style="color:var(--orange)">●</span>{% else %}<span class="muted">·</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="muted">No common steps.</p>
+  {% endif %}
+
+  {% if diff.steps_only_in_a %}
+  <div style="margin-top:12px; font-size:12px">
+    <span class="muted">Only in <strong>{{ diff.wf_a }}</strong>:</span>
+    {% for s in diff.steps_only_in_a %}
+    <span class="badge badge-default" style="margin-left:4px">{{ s }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if diff.steps_only_in_b %}
+  <div style="margin-top:8px; font-size:12px">
+    <span class="muted">Only in <strong>{{ diff.wf_b }}</strong>:</span>
+    {% for s in diff.steps_only_in_b %}
+    <span class="badge badge-default" style="margin-left:4px">{{ s }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+<!-- Metric diff -->
+<div class="card">
+  <div class="card-title">Metric Deltas</div>
+  {% if diff.metric_diffs %}
+  <table style="font-size:13px">
+    <thead>
+      <tr>
+        <th>Metric</th>
+        <th style="text-align:right">{{ diff.wf_a }}</th>
+        <th style="text-align:right">{{ diff.wf_b }}</th>
+        <th style="text-align:right">Δ</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for m in diff.metric_diffs %}
+    <tr>
+      <td class="mono" style="font-size:12px">{{ m.metric }}</td>
+      <td class="mono" style="text-align:right">
+        {% if m.value_a is not none %}{{ (m.value_a * 100) | round(2) }}%{% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td class="mono" style="text-align:right">
+        {% if m.value_b is not none %}{{ (m.value_b * 100) | round(2) }}%{% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td class="mono" style="text-align:right">
+        {% if m.delta is not none %}
+          {% set pct = (m.delta * 100) | round(2) %}
+          {% if m.improved == true %}
+            <span style="color:var(--green)">+{{ pct }}%</span>
+          {% elif m.improved == false %}
+            <span style="color:var(--red)">{{ pct }}%</span>
+          {% else %}
+            <span class="muted">{{ pct }}%</span>
+          {% endif %}
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No metric data available in either run.</p>
+  {% endif %}
+</div>
+
+</div><!-- two-col -->
+{% elif ref_a and ref_b %}
+<!-- error already shown above -->
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon">⇄</div>
+  <p>Select two workflow runs above to compare them.</p>
+</div>
+{% endif %}
+{% endblock %}

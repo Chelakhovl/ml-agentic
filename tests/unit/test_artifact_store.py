@@ -146,10 +146,13 @@ class TestAzureBlobArtifactStoreUnit:
         fake_id_module = MagicMock()
         fake_id_module.DefaultAzureCredential.return_value = cred_mock
 
-        with patch.dict(sys.modules, {
-            "azure.storage.blob": fake_blob_module,
-            "azure.identity": fake_id_module,
-        }):
+        with patch.dict(
+            sys.modules,
+            {
+                "azure.storage.blob": fake_blob_module,
+                "azure.identity": fake_id_module,
+            },
+        ):
             store = AzureBlobArtifactStore(cfg, client_factory=FakeAzureMLClientFactory())
         return store
 
@@ -232,10 +235,13 @@ class TestAzureBlobArtifactStoreUnit:
         fake_id_module = MagicMock()
         fake_id_module.DefaultAzureCredential.return_value = cred
 
-        with patch.dict(sys.modules, {
-            "azure.storage.blob": fake_blob_module,
-            "azure.identity": fake_id_module,
-        }):
+        with patch.dict(
+            sys.modules,
+            {
+                "azure.storage.blob": fake_blob_module,
+                "azure.identity": fake_id_module,
+            },
+        ):
             AzureBlobArtifactStore(cfg, client_factory=factory)
 
         assert "myds" in factory.last_client.datastores.fetched
@@ -256,10 +262,13 @@ class TestAzureBlobArtifactStoreUnit:
         fake_id_module = MagicMock()
         fake_id_module.DefaultAzureCredential.return_value = cred
 
-        with patch.dict(sys.modules, {
-            "azure.storage.blob": fake_blob_module,
-            "azure.identity": fake_id_module,
-        }):
+        with patch.dict(
+            sys.modules,
+            {
+                "azure.storage.blob": fake_blob_module,
+                "azure.identity": fake_id_module,
+            },
+        ):
             AzureBlobArtifactStore(cfg, client_factory=factory)
 
         # No MLClient was created — no datastore lookups
@@ -281,10 +290,13 @@ class TestAzureBlobArtifactStoreUnit:
         fake_id_module = MagicMock()
         fake_id_module.DefaultAzureCredential.return_value = cred
 
-        with patch.dict(sys.modules, {
-            "azure.storage.blob": fake_blob_module,
-            "azure.identity": fake_id_module,
-        }):
+        with patch.dict(
+            sys.modules,
+            {
+                "azure.storage.blob": fake_blob_module,
+                "azure.identity": fake_id_module,
+            },
+        ):
             with pytest.raises(ValueError, match="container_name"):
                 AzureBlobArtifactStore(cfg, client_factory=factory)
 
@@ -380,48 +392,59 @@ def _make_stub_agent(success: bool = True, msg: str = "ok") -> type:
             self._dir = artifacts_dir
 
         def run(self, inp: Any) -> Any:
-            from agentic_mlops.contracts.validation import DatasetValidationOutput
-
             from agentic_mlops.contracts.approvals import ApprovalAction, ApprovalOutput
             from agentic_mlops.contracts.evaluation import EvaluationOutput
             from agentic_mlops.contracts.model_registry import ModelRegistrationOutput
             from agentic_mlops.contracts.training import TrainingOutput
+            from agentic_mlops.contracts.validation import DatasetValidationOutput
 
             # Return a plausible stub for every type of agent that MVPWorkflow calls.
             name = type(inp).__name__
             if "Validation" in name:
                 return DatasetValidationOutput(
-                    success=True, message="ok", status="passed",
+                    success=True,
+                    message="ok",
+                    status="passed",
                     num_images={"train": 1, "val": 1},
                     num_labels={"train": 1, "val": 1},
-                    issues=[], warnings=[],
+                    issues=[],
+                    warnings=[],
                 )
             if "Training" in name:
                 pt = self._dir / "best.pt"
                 pt.write_bytes(b"fake")
                 return TrainingOutput(
-                    success=True, message="ok",
+                    success=True,
+                    message="ok",
                     job_status="completed",
                     best_weights_path=str(pt),
                 )
             if "Evaluation" in name:
                 return EvaluationOutput(
-                    success=True, message="ok",
-                    map50=0.9, map50_95=0.7, precision=0.85, recall=0.80,
+                    success=True,
+                    message="ok",
+                    map50=0.9,
+                    map50_95=0.7,
+                    precision=0.85,
+                    recall=0.80,
                     recommendation="PROMOTE_CANDIDATE",
-                    passed_checks=[], failed_checks=[],
+                    passed_checks=[],
+                    failed_checks=[],
                 )
             if "Approval" in name:
                 return ApprovalOutput(
-                    success=True, message="ok",
+                    success=True,
+                    message="ok",
                     status="approved",
                     action=ApprovalAction.APPROVE_MODEL,
                     approver="test",
                 )
             if "Registration" in name:
                 return ModelRegistrationOutput(
-                    success=True, message="ok",
-                    model_name="m", version="1",
+                    success=True,
+                    message="ok",
+                    model_name="m",
+                    version="1",
                     registry_path=str(self._dir),
                 )
             raise ValueError(f"Unknown input type: {name}")

@@ -47,15 +47,13 @@ class AzureMLOnlineEndpointDeployer:
             from agentic_mlops.integrations.azure_ml_client import (  # noqa: PLC0415
                 DefaultAzureMLClientFactory,
             )
+
             client_factory = DefaultAzureMLClientFactory()
         self._factory = client_factory
 
     def deploy(self, inp: DeploymentInput, artifacts_dir: Path) -> DeploymentOutput:
         if not inp.azure_model_name or inp.azure_model_version is None:
-            msg = (
-                "azure_model_name and azure_model_version are required for "
-                "backend='azure_ml'."
-            )
+            msg = "azure_model_name and azure_model_version are required for " "backend='azure_ml'."
             return DeploymentOutput(
                 success=False, message=msg, status=DeploymentStatus.FAILED, errors=[msg]
             )
@@ -105,9 +103,7 @@ class AzureMLOnlineEndpointDeployer:
             }
             artifacts_dir.mkdir(parents=True, exist_ok=True)
             manifest_path = artifacts_dir / "azure_deployment_manifest.json"
-            manifest_path.write_text(
-                json.dumps(manifest, indent=2, default=str), encoding="utf-8"
-            )
+            manifest_path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
 
             logger.info(
                 "Azure ML online endpoint deployment complete",
@@ -145,9 +141,7 @@ class AzureMLOnlineEndpointDeployer:
     def _build_endpoint(self, endpoint_name: str) -> Any:
         from azure.ai.ml.entities import ManagedOnlineEndpoint  # noqa: PLC0415
 
-        return ManagedOnlineEndpoint(
-            name=endpoint_name, auth_mode=self._config.serving.auth_mode
-        )
+        return ManagedOnlineEndpoint(name=endpoint_name, auth_mode=self._config.serving.auth_mode)
 
     def _build_deployment(
         self, deployment_name: str, endpoint_name: str, inp: DeploymentInput

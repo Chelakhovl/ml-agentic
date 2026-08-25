@@ -120,14 +120,13 @@ def _action_class(action: str) -> str:
 
 
 def _render(request: Request, template: str, ctx: dict[str, Any]) -> HTMLResponse:
-    ctx.setdefault("request", request)
     ctx.setdefault("status_class", _status_class)
     ctx.setdefault("action_class", _action_class)
     ctx.setdefault("fmt_dt", _fmt_dt)
     ctx.setdefault("audit_icon", _audit_icon)
     ctx.setdefault("step_icon", lambda s: _STEP_ICONS.get(s, "⚙"))
     ctx.setdefault("flash", request.query_params.get("flash", ""))
-    return _tmpl(request).TemplateResponse(template, ctx)
+    return _tmpl(request).TemplateResponse(request, template, ctx)
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -150,17 +149,124 @@ async def dashboard(request: Request):
     return _render(request, "dashboard.html", {"workflows": workflows, "stats": stats})
 
 
+# ── Run comparison ───────────────────────────────────────────────────────────
+
+
+@router.get("/workflows/compare", response_class=HTMLResponse)
+async def workflow_compare(request: Request, a: str = "", b: str = ""):
+    workflows = reader.list_workflows(_runs(request))
+    diff: dict | None = None
+    error: str | None = None
+    if a and b:
+        diff = reader.get_run_diff(_runs(request), a, b)
+        if diff is None:
+            error = f"One or both workflow IDs not found: '{a}', '{b}'"
+    return _render(
+        request,
+        "workflow_compare.html",
+        {
+            "workflows": workflows,
+            "ref_a": a,
+            "ref_b": b,
+            "diff": diff,
+            "error": error,
+        },
+    )
+
+
+# ── Cost summary ──────────────────────────────────────────────────────────────
+
+
+@router.get("/costs", response_class=HTMLResponse)
+async def costs_summary(request: Request):
+    reports = reader.list_cost_reports(_runs(request))
+    grand_total = sum(r.get("total_cost_usd", 0.0) for r in reports)
+    top = sorted(reports, key=lambda r: r.get("total_cost_usd", 0.0), reverse=True)
+    return _render(
+        request,
+        "costs.html",
+        {
+            "reports": reports,
+            "grand_total": grand_total,
+            "top_run": top[0] if top else None,
+        },
+    )
+
+
+# ── Prune runs ────────────────────────────────────────────────────────────────
+
+
+@router.get("/workflows/prune", response_class=HTMLResponse)
+async def prune_preview(
+    request: Request,
+    keep_last: int | None = None,
+    older_than_days: int | None = None,
+):
+    from agentic_mlops.tools.run_pruner import WorkflowPruner  # noqa: PLC0415
+
+    preview: dict | None = None
+    error: str | None = None
+    if keep_last is not None or older_than_days is not None:
+        try:
+            pruner = WorkflowPruner(
+                keep_last=keep_last,
+                older_than_days=older_than_days,
+                dry_run=True,
+            )
+            result = pruner.prune(_runs(request))
+            preview = {
+                "to_delete": result.deleted,
+                "to_keep": result.kept,
+                "skipped": result.skipped,
+                "keep_last": keep_last,
+                "older_than_days": older_than_days,
+            }
+        except ValueError as exc:
+            error = str(exc)
+    return _render(
+        request,
+        "prune.html",
+        {
+            "preview": preview,
+            "error": error,
+            "keep_last": keep_last,
+            "older_than_days": older_than_days,
+        },
+    )
+
+
+@router.post("/workflows/prune")
+async def prune_execute(
+    request: Request,
+    keep_last: Annotated[int | None, Form()] = None,
+    older_than_days: Annotated[int | None, Form()] = None,
+):
+    from agentic_mlops.tools.run_pruner import WorkflowPruner  # noqa: PLC0415
+
+    try:
+        pruner = WorkflowPruner(keep_last=keep_last, older_than_days=older_than_days)
+        result = pruner.prune(_runs(request))
+    except ValueError as exc:
+        return RedirectResponse(f"/?flash={str(exc)[:80]}", status_code=303)
+    msg = f"Pruned:+deleted+{result.deleted_count}+run(s),+kept+{len(result.kept)}"
+    return RedirectResponse(f"/?flash={msg}", status_code=303)
+
+
 # ── New workflow ──────────────────────────────────────────────────────────────
 
 
 @router.get("/workflows/new", response_class=HTMLResponse)
 async def new_workflow_form(request: Request):
     default_id = f"wf_{datetime.now(tz=UTC).strftime('%Y%m%d_%H%M%S')}"
-    return _render(request, "new_workflow.html", {
-        "pipeline_steps": PIPELINE_STEPS,
-        "default_steps": DEFAULT_STEPS,
-        "default_id": default_id,
-    })
+    return _render(
+        request,
+        "new_workflow.html",
+        {
+            "pipeline_steps": PIPELINE_STEPS,
+            "default_steps": DEFAULT_STEPS,
+            "default_id": default_id,
+        },
+    )
 
 
 @router.post("/workflows/new")
@@ -180,12 +286,16 @@ async def new_workflow_submit(
 ):
     workflow_id = workflow_id.strip()
     if not reader.is_safe_path_id(workflow_id):
-        return _render(request, "new_workflow.html", {
-            "pipeline_steps": PIPELINE_STEPS,
-            "default_steps": DEFAULT_STEPS,
-            "default_id": workflow_id,
-            "error": "workflow_id is required and may not contain '/', '\\', '.' or '..'",
-        })
+        return _render(
+            request,
+            "new_workflow.html",
+            {
+                "pipeline_steps": PIPELINE_STEPS,
+                "default_steps": DEFAULT_STEPS,
+                "default_id": workflow_id,
+                "error": "workflow_id is required and may not contain '/', '\\', '.' or '..'",
+            },
+        )
 
     is_dry = dry_run.lower() in ("true", "1", "on", "yes")
     chosen_steps = [s for s in PIPELINE_STEPS if s in (steps or list(DEFAULT_STEPS))]
@@ -232,27 +342,35 @@ async def new_workflow_submit(
             f"  --runs-dir {inp_kwargs['runs_dir']} \\\n"
             f"  --config configs/orchestrator.yaml"
         )
-        return _render(request, "new_workflow.html", {
-            "pipeline_steps": PIPELINE_STEPS,
-            "default_steps": chosen_steps,
-            "default_id": workflow_id,
-            "cli_command": cli_cmd,
-            "info": (
-                "Non-dry-run workflows must be started from the CLI to support "
-                "long-running training jobs."
-            ),
-        })
+        return _render(
+            request,
+            "new_workflow.html",
+            {
+                "pipeline_steps": PIPELINE_STEPS,
+                "default_steps": chosen_steps,
+                "default_id": workflow_id,
+                "cli_command": cli_cmd,
+                "info": (
+                    "Non-dry-run workflows must be started from the CLI to support "
+                    "long-running training jobs."
+                ),
+            },
+        )
 
     # dry_run=True: run in background thread
     try:
         inp = OrchestratorInput(**inp_kwargs)
     except Exception as exc:
-        return _render(request, "new_workflow.html", {
-            "pipeline_steps": PIPELINE_STEPS,
-            "default_steps": chosen_steps,
-            "default_id": workflow_id,
-            "error": f"Invalid input: {exc}",
-        })
+        return _render(
+            request,
+            "new_workflow.html",
+            {
+                "pipeline_steps": PIPELINE_STEPS,
+                "default_steps": chosen_steps,
+                "default_id": workflow_id,
+                "error": f"Invalid input: {exc}",
+            },
+        )
 
     from agentic_mlops.workflows.orchestrator import OrchestratorWorkflow
 
@@ -272,11 +390,44 @@ async def workflow_detail(request: Request, workflow_id: str):
     if state is None:
         raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found")
     audit_log = reader.get_audit_log(_runs(request), workflow_id)
-    return _render(request, "workflow_detail.html", {
-        "state": state,
-        "audit_log": audit_log,
-        "pipeline_steps": PIPELINE_STEPS,
-    })
+    baseline_comparison = reader.get_baseline_comparison(_runs(request), workflow_id)
+    risk_report = reader.get_risk_report(_runs(request), workflow_id)
+    cost_report = reader.get_cost_report(_runs(request), workflow_id)
+    return _render(
+        request,
+        "workflow_detail.html",
+        {
+            "state": state,
+            "audit_log": audit_log,
+            "pipeline_steps": PIPELINE_STEPS,
+            "baseline_comparison": baseline_comparison,
+            "risk_report": risk_report,
+            "cost_report": cost_report,
+        },
+    )
+
+
+@router.post("/workflows/{workflow_id}/tags")
+async def workflow_tags_update(
+    request: Request,
+    workflow_id: str,
+    tag_key: Annotated[str, Form()] = "",
+    tag_value: Annotated[str, Form()] = "",
+    remove_key: Annotated[str, Form()] = "",
+):
+    if not reader.is_safe_path_id(workflow_id):
+        raise HTTPException(status_code=400, detail="Invalid workflow_id")
+    from agentic_mlops.tools.run_tagger import WorkflowRunTagger
+
+    tagger = WorkflowRunTagger()
+    try:
+        if remove_key.strip():
+            tagger.remove(_runs(request), workflow_id, [remove_key.strip()])
+        elif tag_key.strip():
+            tagger.add(_runs(request), workflow_id, {tag_key.strip(): tag_value.strip()})
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found")  # noqa: B904
+    return RedirectResponse(f"/workflows/{workflow_id}?flash=Tags+updated", status_code=303)
 
 
 # ── Approval ──────────────────────────────────────────────────────────────────
@@ -303,11 +454,15 @@ async def approve_form(request: Request, workflow_id: str):
             f"/workflows/{workflow_id}?flash=No+approval+pending", status_code=303
         )
     actions = H4_ACTIONS if gate == "h4" else H5_ACTIONS
-    return _render(request, "approve.html", {
-        "state": state,
-        "gate": gate,
-        "actions": actions,
-    })
+    return _render(
+        request,
+        "approve.html",
+        {
+            "state": state,
+            "gate": gate,
+            "actions": actions,
+        },
+    )
 
 
 @router.post("/approve/{workflow_id}")
@@ -339,9 +494,9 @@ async def approve_submit(
     # — TrainingApprovalAgent/HumanApprovalAgent themselves write
     # approval_decision.json as their *output* once that happens, so nothing else
     # needs to write it here.
-    overrides: dict[str, Any] = {"training_approver" if gate == "h4" else "approver": (
-        approver.strip() or "web-ui"
-    )}
+    overrides: dict[str, Any] = {
+        "training_approver" if gate == "h4" else "approver": (approver.strip() or "web-ui")
+    }
     if gate == "h4":
         overrides["training_approval_action"] = action
     else:
@@ -359,15 +514,78 @@ async def registry_list(request: Request):
     return _render(request, "registry.html", {"models": models})
 
 
+@router.get("/registry/compare", response_class=HTMLResponse)
+async def model_compare_early(request: Request, a: str = "", b: str = ""):
+    reg = _registry(request)
+    all_models = reader.list_models(reg)
+    all_versions: dict[str, list[dict]] = {
+        m["model_name"]: reader.get_model_versions(reg, m["model_name"]) for m in all_models
+    }
+    model_a = _resolve_model_ref(reg, a) if a else None
+    model_b = _resolve_model_ref(reg, b) if b else None
+    metrics = ("map50", "map50_95", "precision", "recall")
+    deltas: list[dict] = []
+    if model_a and model_b:
+        lin_a = model_a.get("lineage", {})
+        lin_b = model_b.get("lineage", {})
+        for m in metrics:
+            va = lin_a.get(m)
+            vb = lin_b.get(m)
+            delta = (vb - va) if (va is not None and vb is not None) else None
+            deltas.append({"metric": m, "a": va, "b": vb, "delta": delta})
+    return _render(
+        request,
+        "compare.html",
+        {
+            "model_a": model_a,
+            "model_b": model_b,
+            "ref_a": a,
+            "ref_b": b,
+            "deltas": deltas,
+            "all_models": all_models,
+            "all_versions": all_versions,
+            "metrics": metrics,
+        },
+    )
+
+
+@router.get("/registry/rank", response_class=HTMLResponse)
+async def model_rank_early(request: Request, model_filter: str = ""):
+    reg = _registry(request)
+    all_versions = reader.list_all_model_versions(reg)
+    model_names = sorted({v["model_name"] for v in all_versions})
+    ranked = (
+        all_versions
+        if not model_filter
+        else [v for v in all_versions if v["model_name"] == model_filter]
+    )
+    winner = ranked[0] if ranked and ranked[0].get("rank") == 1 else None
+    return _render(
+        request,
+        "rank.html",
+        {
+            "ranked": ranked,
+            "winner": winner,
+            "model_names": model_names,
+            "model_filter": model_filter,
+            "metrics": ("map50", "map50_95", "precision", "recall"),
+        },
+    )
+
+
 @router.get("/registry/{model_name}", response_class=HTMLResponse)
 async def model_detail(request: Request, model_name: str):
     versions = reader.get_model_versions(_registry(request), model_name)
     if not versions:
         raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found")
-    return _render(request, "model_detail.html", {
-        "model_name": model_name,
-        "versions": versions,
-    })
+    return _render(
+        request,
+        "model_detail.html",
+        {
+            "model_name": model_name,
+            "versions": versions,
+        },
+    )
 
 
 # ── Monitoring ────────────────────────────────────────────────────────────────
@@ -379,6 +597,22 @@ async def monitoring_list(request: Request):
     return _render(request, "monitoring.html", {"reports": reports})
 
 
+@router.get("/monitoring/hard-samples", response_class=HTMLResponse)
+async def hard_samples_aggregate(request: Request):
+    manifests = reader.list_hard_samples(_runs(request))
+    total_count = sum(m["count"] for m in manifests)
+    top = max(manifests, key=lambda m: m["count"], default=None)
+    return _render(
+        request,
+        "monitoring_hard_samples.html",
+        {
+            "manifests": manifests,
+            "total_count": total_count,
+            "top_workflow": top,
+        },
+    )
+
+
 @router.get("/monitoring/{workflow_id}/{step}", response_class=HTMLResponse)
 async def monitoring_detail_view(request: Request, workflow_id: str, step: str):
     report = reader.get_monitoring_report(_runs(request), workflow_id, step)
@@ -387,11 +621,15 @@ async def monitoring_detail_view(request: Request, workflow_id: str, step: str):
             status_code=404,
             detail=f"Monitoring report '{workflow_id}/{step}' not found",
         )
-    return _render(request, "monitoring_detail.html", {
-        "report": report,
-        "workflow_id": workflow_id,
-        "step": step,
-    })
+    return _render(
+        request,
+        "monitoring_detail.html",
+        {
+            "report": report,
+            "workflow_id": workflow_id,
+            "step": step,
+        },
+    )
 
 
 # ── Workflow resume ───────────────────────────────────────────────────────────
@@ -453,7 +691,270 @@ async def workflow_resume(request: Request, workflow_id: str):
     return _resume_workflow(_runs(request), workflow_id, overrides={})
 
 
+# ── Slack interactive approval webhook ────────────────────────────────────────
+
+
+@router.post("/webhooks/approve/slack")
+async def slack_approval_webhook(request: Request):
+    """Receive Slack interactive button callbacks for H4/H5 approval gates.
+
+    Requires:
+    - Slack app with "Interactivity" enabled.
+    - "Interactivity Request URL" set to ``{callback_base_url}/webhooks/approve/slack``.
+    - ``SLACK_SIGNING_SECRET`` env var or ``--slack-signing-secret`` flag on
+      ``agentic-mlops serve`` (same value as in your Slack app's Basic Information).
+
+    Button values are encoded as ``<workflow_id>:<action>`` by
+    ``_format_slack_approval()`` in ``integrations/notification_client.py``.
+    """
+    import hashlib  # noqa: PLC0415
+    import hmac  # noqa: PLC0415
+    import time  # noqa: PLC0415
+    import urllib.parse  # noqa: PLC0415
+
+    signing_secret: str = getattr(request.app.state, "slack_signing_secret", "")
+    body_bytes = await request.body()
+
+    if signing_secret:
+        timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
+        sig_header = request.headers.get("X-Slack-Signature", "")
+
+        # Reject stale requests (replay protection — 5 minute window).
+        try:
+            if abs(time.time() - int(timestamp)) > 300:
+                raise HTTPException(status_code=403, detail="Slack request timestamp too old")
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Missing or invalid Slack timestamp")  # noqa: B904
+
+        sig_basestring = f"v0:{timestamp}:{body_bytes.decode('utf-8')}"
+        computed_sig = (
+            "v0="
+            + hmac.new(
+                signing_secret.encode("utf-8"),
+                sig_basestring.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+        )
+        if not hmac.compare_digest(computed_sig, sig_header):
+            raise HTTPException(status_code=403, detail="Invalid Slack signature")
+
+    # Slack sends block_actions as application/x-www-form-urlencoded
+    # with a single "payload" field containing JSON.
+    try:
+        form_data = urllib.parse.parse_qs(body_bytes.decode("utf-8"))
+        payload_json = form_data.get("payload", ["{}"])[0]
+        slack_payload = json.loads(payload_json)
+    except (json.JSONDecodeError, UnicodeDecodeError, KeyError):
+        raise HTTPException(status_code=400, detail="Malformed Slack payload")  # noqa: B904
+
+    if slack_payload.get("type") != "block_actions":
+        return JSONResponse({"ok": True})
+
+    actions = slack_payload.get("actions", [])
+    if not actions:
+        return JSONResponse({"ok": True})
+
+    # Button value is encoded as "<workflow_id>:<action>"
+    action = actions[0]
+    raw_value = action.get("value", "")
+    if ":" not in raw_value:
+        raise HTTPException(status_code=400, detail="Unexpected action value format")
+
+    workflow_id, _, action_name = raw_value.partition(":")
+    workflow_id = workflow_id.strip()
+    action_name = action_name.strip()
+
+    if not reader.is_safe_path_id(workflow_id):
+        raise HTTPException(status_code=400, detail="Invalid workflow_id in action value")
+
+    state = reader.get_workflow(_runs(request), workflow_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found")
+
+    gate = _detect_gate(state)
+    allowed = H4_ACTIONS if gate == "h4" else H5_ACTIONS
+    if action_name not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Action '{action_name}' not valid for gate '{gate or 'none'}'",
+        )
+
+    slack_user = (
+        slack_payload.get("user", {}).get("name")
+        or slack_payload.get("user", {}).get("id")
+        or "slack-user"
+    )
+    overrides: dict[str, Any] = {
+        "training_approver" if gate == "h4" else "approver": slack_user,
+    }
+    if gate == "h4":
+        overrides["training_approval_action"] = action_name
+    else:
+        overrides["approval_action"] = action_name
+
+    # Run the resume in the background — Slack expects a 200 within 3 seconds.
+    runs_dir = _runs(request)
+    input_file = runs_dir / workflow_id / "input.json"
+    if not input_file.exists():
+        return JSONResponse({"ok": True, "warning": "input.json not found — resume from CLI"})
+
+    try:
+        data = json.loads(input_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return JSONResponse({"ok": True, "warning": "Could not read input.json"})
+
+    data["resume"] = True
+    data["interactive_approval"] = False
+    data["interactive_training_approval"] = False
+    data.update(overrides)
+
+    from agentic_mlops.contracts.orchestrator import OrchestratorInput  # noqa: PLC0415
+    from agentic_mlops.workflows.orchestrator import OrchestratorWorkflow  # noqa: PLC0415
+
+    try:
+        inp = OrchestratorInput(**data)
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"ok": True, "warning": "Invalid input — resume from CLI"})
+
+    def _run() -> None:
+        OrchestratorWorkflow().run(inp)
+
+    asyncio.get_running_loop().run_in_executor(None, _run)
+    return JSONResponse({"ok": True, "action": action_name, "workflow_id": workflow_id})
+
+
+# ── Teams interactive approval webhook ───────────────────────────────────────
+
+
+@router.post("/webhooks/approve/teams")
+async def teams_approval_webhook(request: Request):
+    """Receive Teams connector HttpPOST callbacks for H4/H5 approval gates.
+
+    Requires:
+    - A Teams connector configured with a security token.
+    - The connector's "Action URL" set to ``{callback_base_url}/webhooks/approve/teams``.
+    - ``TEAMS_SIGNING_SECRET`` env var or ``--teams-signing-secret`` flag on
+      ``agentic-mlops serve`` (the base64-encoded security token from the connector).
+
+    The request body is the JSON we embedded in each HttpPOST action's ``body`` field:
+    ``{"workflow_id": "<id>", "action": "<action_name>"}``.
+
+    Teams verifies requests by attaching ``Authorization: HMAC <base64-hmac>`` where
+    the HMAC is SHA-256 over the UTF-8 request body using the base64-decoded token key.
+    """
+    import base64  # noqa: PLC0415
+    import hashlib  # noqa: PLC0415
+    import hmac  # noqa: PLC0415
+
+    signing_secret: str = getattr(request.app.state, "teams_signing_secret", "")
+    body_bytes = await request.body()
+
+    if signing_secret:
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.upper().startswith("HMAC "):
+            raise HTTPException(status_code=403, detail="Missing Teams HMAC authorization")
+        provided_hmac = auth_header[5:].strip()
+        try:
+            key_bytes = base64.b64decode(signing_secret)
+        except Exception:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail="Invalid Teams signing secret encoding")  # noqa: B904
+        computed_hmac = base64.b64encode(
+            hmac.new(key_bytes, body_bytes, hashlib.sha256).digest()
+        ).decode("ascii")
+        if not hmac.compare_digest(computed_hmac, provided_hmac):
+            raise HTTPException(status_code=403, detail="Invalid Teams HMAC signature")
+
+    try:
+        teams_payload = json.loads(body_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Malformed Teams payload")  # noqa: B904
+
+    workflow_id = str(teams_payload.get("workflow_id", "")).strip()
+    action_name = str(teams_payload.get("action", "")).strip()
+
+    if not workflow_id or not action_name:
+        raise HTTPException(
+            status_code=400, detail="Missing workflow_id or action in Teams payload"
+        )
+    if not reader.is_safe_path_id(workflow_id):
+        raise HTTPException(status_code=400, detail="Invalid workflow_id")
+
+    state = reader.get_workflow(_runs(request), workflow_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found")
+
+    gate = _detect_gate(state)
+    allowed = H4_ACTIONS if gate == "h4" else H5_ACTIONS
+    if action_name not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Action '{action_name}' not valid for gate '{gate or 'none'}'",
+        )
+
+    overrides: dict[str, Any] = {
+        "training_approver" if gate == "h4" else "approver": "teams-user",
+    }
+    if gate == "h4":
+        overrides["training_approval_action"] = action_name
+    else:
+        overrides["approval_action"] = action_name
+
+    runs_dir = _runs(request)
+    input_file = runs_dir / workflow_id / "input.json"
+    if not input_file.exists():
+        return JSONResponse({"type": "message", "text": "input.json not found — resume from CLI"})
+
+    try:
+        data = json.loads(input_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return JSONResponse({"type": "message", "text": "Could not read input.json"})
+
+    data["resume"] = True
+    data["interactive_approval"] = False
+    data["interactive_training_approval"] = False
+    data.update(overrides)
+
+    from agentic_mlops.contracts.orchestrator import OrchestratorInput  # noqa: PLC0415
+    from agentic_mlops.workflows.orchestrator import OrchestratorWorkflow  # noqa: PLC0415
+
+    try:
+        inp = OrchestratorInput(**data)
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"type": "message", "text": "Invalid input — resume from CLI"})
+
+    def _run() -> None:
+        OrchestratorWorkflow().run(inp)
+
+    asyncio.get_running_loop().run_in_executor(None, _run)
+    return JSONResponse(
+        {
+            "type": "message",
+            "text": f"Action '{action_name}' accepted for workflow '{workflow_id}'",
+        }
+    )
+
+
 # ── JSON API ──────────────────────────────────────────────────────────────────
+
+
+@router.get("/api/workflows/{workflow_id}/audit")
+async def workflow_audit_api(request: Request, workflow_id: str, since: int = 0):
+    """Return audit log entries. `since` is the count the caller already has."""
+    entries = reader.get_audit_log(_runs(request), workflow_id)
+    new_entries = entries[: max(0, len(entries) - since)] if since > 0 else entries
+    return JSONResponse({"entries": new_entries, "total": len(entries)})
+
+
+@router.get("/api/workflows/{workflow_id}/export")
+async def workflow_export(workflow_id: str, request: Request):
+    """Download workflow state.json as a JSON attachment."""
+    state = reader.get_workflow(_runs(request), workflow_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found")
+    return JSONResponse(
+        state,
+        headers={"Content-Disposition": f'attachment; filename="{workflow_id}.json"'},
+    )
 
 
 @router.get("/api/workflows/{workflow_id}/status")
@@ -461,16 +962,18 @@ async def workflow_status_api(workflow_id: str, request: Request):
     state = reader.get_workflow(_runs(request), workflow_id)
     if state is None:
         raise HTTPException(status_code=404)
-    return JSONResponse({
-        "workflow_id": workflow_id,
-        "status": state.get("status", "unknown"),
-        "current_state": state.get("current_state", ""),
-        "completed_steps": state.get("completed_steps", []),
-        "step_status": state.get("step_status", {}),
-        "last_agent": state.get("last_agent"),
-        "updated_at": state.get("updated_at", ""),
-        "pending_approval_id": state.get("pending_approval_id"),
-    })
+    return JSONResponse(
+        {
+            "workflow_id": workflow_id,
+            "status": state.get("status", "unknown"),
+            "current_state": state.get("current_state", ""),
+            "completed_steps": state.get("completed_steps", []),
+            "step_status": state.get("step_status", {}),
+            "last_agent": state.get("last_agent"),
+            "updated_at": state.get("updated_at", ""),
+            "pending_approval_id": state.get("pending_approval_id"),
+        }
+    )
 
 
 @router.get("/api/workflows/{workflow_id}/stream")
@@ -488,15 +991,17 @@ async def workflow_status_stream(workflow_id: str, request: Request):
             updated_at = state.get("updated_at", "")
             if updated_at != last_updated_at:
                 last_updated_at = updated_at
-                payload = json.dumps({
-                    "workflow_id": workflow_id,
-                    "status": state.get("status", "unknown"),
-                    "current_state": state.get("current_state", ""),
-                    "completed_steps": state.get("completed_steps", []),
-                    "step_status": state.get("step_status", {}),
-                    "last_agent": state.get("last_agent"),
-                    "updated_at": updated_at,
-                })
+                payload = json.dumps(
+                    {
+                        "workflow_id": workflow_id,
+                        "status": state.get("status", "unknown"),
+                        "current_state": state.get("current_state", ""),
+                        "completed_steps": state.get("completed_steps", []),
+                        "step_status": state.get("step_status", {}),
+                        "last_agent": state.get("last_agent"),
+                        "updated_at": updated_at,
+                    }
+                )
                 yield f"data: {payload}\n\n"
             if state.get("status", "unknown") != "running":
                 break
@@ -528,6 +1033,55 @@ async def dataset_detail_view(request: Request, dataset_name: str):
         raise HTTPException(status_code=404, detail=f"Dataset '{dataset_name}' not found")
     return _render(
         request, "dataset_detail.html", {"dataset_name": dataset_name, "versions": versions}
+    )
+
+
+@router.get("/datasets/{dataset_name}/quality", response_class=HTMLResponse)
+async def dataset_quality_view(request: Request, dataset_name: str):
+    quality_data = reader.get_dataset_quality_data(_datasets(request), dataset_name)
+    if not quality_data:
+        raise HTTPException(status_code=404, detail=f"Dataset '{dataset_name}' not found")
+    return _render(
+        request,
+        "dataset_quality.html",
+        {"dataset_name": dataset_name, "versions": quality_data},
+    )
+
+
+@router.get("/datasets/{dataset_name}/diff", response_class=HTMLResponse)
+async def dataset_diff_view(request: Request, dataset_name: str, v1: int = 0, v2: int = 0):
+    if not reader.is_safe_path_id(dataset_name):
+        raise HTTPException(status_code=400, detail="Invalid dataset name")
+
+    all_versions = reader.get_dataset_versions(_datasets(request), dataset_name)
+    if not all_versions:
+        raise HTTPException(status_code=404, detail=f"Dataset '{dataset_name}' not found")
+
+    version_nums = sorted([v["version"] for v in all_versions])
+
+    # Default: compare the two most recent versions
+    if v1 == 0 or v2 == 0:
+        if len(version_nums) >= 2:
+            v1, v2 = version_nums[-2], version_nums[-1]
+        elif version_nums:
+            v1 = v2 = version_nums[-1]
+
+    diff = reader.get_dataset_diff(_datasets(request), dataset_name, v1, v2)
+    if diff is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Version v{v1} or v{v2} of dataset '{dataset_name}' not found",
+        )
+    return _render(
+        request,
+        "dataset_diff.html",
+        {
+            "dataset_name": dataset_name,
+            "diff": diff,
+            "version_nums": version_nums,
+            "v1": v1,
+            "v2": v2,
+        },
     )
 
 
@@ -568,8 +1122,7 @@ async def model_compare(request: Request, a: str = "", b: str = ""):
     reg = _registry(request)
     all_models = reader.list_models(reg)
     all_versions: dict[str, list[dict]] = {
-        m["model_name"]: reader.get_model_versions(reg, m["model_name"])
-        for m in all_models
+        m["model_name"]: reader.get_model_versions(reg, m["model_name"]) for m in all_models
     }
 
     model_a = _resolve_model_ref(reg, a) if a else None
@@ -586,16 +1139,47 @@ async def model_compare(request: Request, a: str = "", b: str = ""):
             delta = (vb - va) if (va is not None and vb is not None) else None
             deltas.append({"metric": m, "a": va, "b": vb, "delta": delta})
 
-    return _render(request, "compare.html", {
-        "model_a": model_a,
-        "model_b": model_b,
-        "ref_a": a,
-        "ref_b": b,
-        "deltas": deltas,
-        "all_models": all_models,
-        "all_versions": all_versions,
-        "metrics": metrics,
-    })
+    return _render(
+        request,
+        "compare.html",
+        {
+            "model_a": model_a,
+            "model_b": model_b,
+            "ref_a": a,
+            "ref_b": b,
+            "deltas": deltas,
+            "all_models": all_models,
+            "all_versions": all_versions,
+            "metrics": metrics,
+        },
+    )
+
+
+# ── Model ranking ─────────────────────────────────────────────────────────────
+
+
+@router.get("/registry/rank", response_class=HTMLResponse)
+async def model_rank(request: Request, model_filter: str = ""):
+    reg = _registry(request)
+    all_versions = reader.list_all_model_versions(reg)
+    model_names = sorted({v["model_name"] for v in all_versions})
+    ranked = (
+        all_versions
+        if not model_filter
+        else [v for v in all_versions if v["model_name"] == model_filter]
+    )
+    winner = ranked[0] if ranked and ranked[0].get("rank") == 1 else None
+    return _render(
+        request,
+        "rank.html",
+        {
+            "ranked": ranked,
+            "winner": winner,
+            "model_names": model_names,
+            "model_filter": model_filter,
+            "metrics": ("map50", "map50_95", "precision", "recall"),
+        },
+    )
 
 
 # ── Prometheus metrics ────────────────────────────────────────────────────────
@@ -632,8 +1216,11 @@ async def prometheus_metrics(request: Request):
         lines.append(f'mlops_workflows_total{{status="{s}"}} {status_counts.get(s, 0)}')
 
     if step_outcomes:
-        metric("Cumulative step execution outcomes across all workflows", "counter",
-               "mlops_workflow_step_outcomes_total")
+        metric(
+            "Cumulative step execution outcomes across all workflows",
+            "counter",
+            "mlops_workflow_step_outcomes_total",
+        )
         for (step, s), count in sorted(step_outcomes.items()):
             lines.append(
                 f'mlops_workflow_step_outcomes_total{{step="{step}",status="{s}"}} {count}'
@@ -643,8 +1230,9 @@ async def prometheus_metrics(request: Request):
     lines.append(f"mlops_models_registered_total {len(models)}")
 
     if models:
-        metric("Latest mAP50 for each registered model (latest version)", "gauge",
-               "mlops_model_map50")
+        metric(
+            "Latest mAP50 for each registered model (latest version)", "gauge", "mlops_model_map50"
+        )
         for m in models:
             name = (m.get("model_name") or "unknown").replace('"', '\\"')
             ver = m.get("version", "")

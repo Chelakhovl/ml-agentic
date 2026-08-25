@@ -13,6 +13,10 @@
     {% if state.get('updated_at') %}
     &nbsp;·&nbsp; Updated: <strong>{{ fmt_dt(state.get('updated_at')) }}</strong>
     {% endif %}
+    &nbsp;·&nbsp;
+    <a href="/workflows/compare?a={{ state.workflow_id }}" class="table-link" style="font-size:12px">⇄ Compare with another run</a>
+    &nbsp;·&nbsp;
+    <a href="/api/workflows/{{ state.workflow_id }}/export" class="table-link" style="font-size:12px" download="{{ state.workflow_id }}.json">⬇ Export JSON</a>
   </p>
 </div>
 
@@ -29,9 +33,9 @@
 
   <!-- Steps -->
   <div class="card">
-    <div class="card-title">Pipeline Steps</div>
+    <div class="card-title">Pipeline Steps <span class="muted" style="text-transform:none; font-weight:400; font-size:11.5px">(click row to expand output)</span></div>
     <div class="table-wrap">
-      <table>
+      <table id="stepsTable">
         <thead>
           <tr><th>Step</th><th>Status</th><th>Key Output</th></tr>
         </thead>
@@ -42,11 +46,18 @@
           {% for step in state.get('steps', []) %}
           {% set s = step_status.get(step, '') %}
           {% set s_lower = s.lower() if s else '' %}
-          <tr>
+          {% set out = step_outputs.get(step, {}) %}
+          <tr
+            class="step-row"
+            data-step="{{ step }}"
+            style="cursor:pointer"
+            onclick="toggleStepDetail('{{ step }}')"
+          >
             <td>
               <span class="step-name">
                 <span>{{ step_icon(step) }}</span>
                 <span>{{ step }}</span>
+                {% if out %}<span style="color:var(--muted); font-size:11px; margin-left:4px">▸</span>{% endif %}
               </span>
             </td>
             <td>
@@ -59,10 +70,43 @@
               {% endif %}
             </td>
             <td class="muted mono" style="font-size:11px">
-              {% set out = step_outputs.get(step, {}) %}
               {% if out.get('status') %}{{ out.status }}{% endif %}
+              {% if out.get('message') %}<span style="margin-left:4px">{{ out.message[:60] }}{% if out.message | length > 60 %}…{% endif %}</span>{% endif %}
             </td>
           </tr>
+          <!-- Detail accordion row -->
+          {% if out %}
+          <tr id="step-detail-{{ step }}" style="display:none; background:#fafafa">
+            <td colspan="3" style="padding:0 14px 12px">
+              <div style="margin-top:8px">
+                {% if out.get('artifacts') %}
+                <div style="margin-bottom:8px; font-size:12px">
+                  <span class="muted" style="font-weight:600">Artifacts:</span>
+                  {% for k, v in out.artifacts.items() %}
+                  <span class="mono" style="margin-left:6px; font-size:11.5px">{{ k }}: {{ v }}</span>
+                  {% endfor %}
+                </div>
+                {% endif %}
+                {% if out.get('errors') %}
+                <div style="margin-bottom:8px; font-size:12px; color:var(--red)">
+                  <strong>Errors:</strong>
+                  {% for e in out.errors %}<div class="mono" style="margin-left:6px">{{ e }}</div>{% endfor %}
+                </div>
+                {% endif %}
+                {% if out.get('warnings') %}
+                <div style="margin-bottom:8px; font-size:12px; color:var(--orange)">
+                  <strong>Warnings:</strong>
+                  {% for w in out.warnings %}<div class="mono" style="margin-left:6px">{{ w }}</div>{% endfor %}
+                </div>
+                {% endif %}
+                <details>
+                  <summary style="cursor:pointer; font-size:11.5px; color:var(--muted); margin-bottom:4px">Full JSON output</summary>
+                  <pre class="cli" style="background:#1a1a2e; font-size:11px; max-height:260px; overflow:auto; margin:4px 0 0"><button class="copy-btn">Copy</button>{{ out | tojson(indent=2) }}</pre>
+                </details>
+              </div>
+            </td>
+          </tr>
+          {% endif %}
           {% endfor %}
         </tbody>
       </table>
@@ -93,6 +137,40 @@
       </table>
     </div>
 
+    <!-- Tags panel -->
+    <div class="card">
+      <div class="card-title">Tags</div>
+      {% set tags = state.get('tags', {}) %}
+      {% if tags %}
+      <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px">
+        {% for k, v in tags.items() %}
+        <span style="display:inline-flex; align-items:center; gap:5px; background:#e8f0fb; color:#004088; border-radius:20px; padding:4px 10px; font-size:12px; font-weight:500">
+          <span class="mono">{{ k }}</span>
+          <span style="color:var(--muted)">=</span>
+          <span>{{ v }}</span>
+          <form method="post" action="/workflows/{{ state.workflow_id }}/tags" style="display:inline; margin:0">
+            <input type="hidden" name="remove_key" value="{{ k }}">
+            <button type="submit" style="background:none; border:none; cursor:pointer; color:var(--muted); font-size:13px; padding:0 2px; line-height:1">×</button>
+          </form>
+        </span>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="muted" style="font-size:12.5px; margin-bottom:12px">No tags set.</p>
+      {% endif %}
+      <form method="post" action="/workflows/{{ state.workflow_id }}/tags" style="display:flex; gap:8px; align-items:flex-end">
+        <div>
+          <label style="font-size:11px; margin-bottom:3px">Key</label>
+          <input type="text" name="tag_key" placeholder="env" style="width:110px; padding:6px 9px; font-size:12.5px">
+        </div>
+        <div>
+          <label style="font-size:11px; margin-bottom:3px">Value</label>
+          <input type="text" name="tag_value" placeholder="prod" style="width:130px; padding:6px 9px; font-size:12.5px">
+        </div>
+        <button type="submit" class="btn btn-secondary btn-sm">Add tag</button>
+      </form>
+    </div>
+
     {% if state.get('status') in ('pending_approval', 'failed') %}
     <div class="card" style="background:#fffbf0; border-color:#fcd88a">
       <div class="card-title">Resume Workflow</div>
@@ -114,6 +192,179 @@
   </div>
 
 </div>
+
+<!-- Baseline comparison -->
+{% if baseline_comparison %}
+{% set bc = baseline_comparison %}
+<div class="card" style="margin-bottom:18px">
+  <div class="card-title" style="display:flex; justify-content:space-between; align-items:center">
+    <span>Baseline Comparison</span>
+    <span>
+      {% if bc.get('improved') %}
+      <span class="badge badge-ok">improved</span>
+      {% else %}
+      <span class="badge badge-warn">no improvement</span>
+      {% endif %}
+    </span>
+  </div>
+
+  {% macro delta_cell(val) %}
+  {% if val is not none %}
+    {% set pct = (val * 100) | round(2) %}
+    {% if pct > 0 %}<span style="color:var(--green)">+{{ pct }}%</span>
+    {% elif pct < 0 %}<span style="color:var(--red)">{{ pct }}%</span>
+    {% else %}<span class="muted">0%</span>
+    {% endif %}
+  {% else %}<span class="muted">—</span>
+  {% endif %}
+  {% endmacro %}
+
+  <div style="overflow-x:auto">
+  <table style="font-size:13px; margin-top:8px">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:6px 12px 6px 0">Metric</th>
+        <th style="text-align:right; padding:6px 12px">Baseline</th>
+        <th style="text-align:right; padding:6px 12px">New</th>
+        <th style="text-align:right; padding:6px 12px">Delta</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for label, base_key, new_key, delta_key in [
+          ('mAP50',      'baseline_map50',      'new_map50',      'delta_map50'),
+          ('mAP50-95',   'baseline_map50_95',   'new_map50_95',   'delta_map50_95'),
+          ('Precision',  'baseline_precision',  'new_precision',  'delta_precision'),
+          ('Recall',     'baseline_recall',     'new_recall',     'delta_recall'),
+      ] %}
+      <tr>
+        <td style="padding:5px 12px 5px 0">{{ label }}</td>
+        <td class="mono" style="text-align:right; padding:5px 12px">{{ (bc.get(base_key, 0) * 100) | round(1) }}%</td>
+        <td class="mono" style="text-align:right; padding:5px 12px">{{ (bc.get(new_key, 0) * 100) | round(1) }}%</td>
+        <td class="mono" style="text-align:right; padding:5px 12px">{{ delta_cell(bc.get(delta_key)) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  <div class="muted" style="font-size:11px; margin-top:10px">
+    Baseline: <span class="mono">{{ bc.get('baseline_path', '—') }}</span>
+    &nbsp;·&nbsp; Generated: {{ fmt_dt(bc.get('generated_at')) }}
+    {% if bc.get('min_improvement_map50') %}
+    &nbsp;·&nbsp; Min Δ mAP50 threshold: {{ (bc.min_improvement_map50 * 100) | round(2) }}%
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- Risk report -->
+{% if risk_report %}
+{% set rr = risk_report %}
+{% set rl = rr.get('risk_level', 'low') %}
+<div class="card" style="margin-bottom:18px">
+  <div class="card-title" style="display:flex; justify-content:space-between; align-items:center">
+    <span>Model Risk Score</span>
+    <span>
+      {% if rl == 'low' %}
+      <span class="badge badge-ok">low risk</span>
+      {% elif rl == 'medium' %}
+      <span class="badge badge-warn">medium risk</span>
+      {% else %}
+      <span class="badge badge-err">high risk</span>
+      {% endif %}
+    </span>
+  </div>
+
+  <!-- Score bar -->
+  {% set pct = ((rr.get('risk_score', 0) * 100) | round(1)) %}
+  {% set bar_color = 'var(--green)' if rl == 'low' else ('var(--yellow)' if rl == 'medium' else 'var(--red)') %}
+  <div style="margin:10px 0 14px">
+    <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-bottom:4px">
+      <span>0</span>
+      <span class="mono" style="font-size:14px; color:var(--text)">{{ pct }}%</span>
+      <span>100</span>
+    </div>
+    <div style="background:var(--bg); border-radius:6px; height:10px; overflow:hidden">
+      <div style="background:{{ bar_color }}; height:100%; width:{{ pct }}%; border-radius:6px; transition:width .4s"></div>
+    </div>
+  </div>
+
+  <!-- Factors table -->
+  {% if rr.get('factors') %}
+  <table style="font-size:12.5px; width:100%">
+    <thead>
+      <tr>
+        <th style="text-align:left; padding:5px 10px 5px 0">Factor</th>
+        <th style="text-align:left; padding:5px 10px">Detail</th>
+        <th style="text-align:right; padding:5px 0 5px 10px">Contribution</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for f in rr.factors %}
+    {% set c_pct = (f.contribution * 100) | round(1) %}
+    <tr>
+      <td class="mono" style="padding:4px 10px 4px 0; white-space:nowrap">{{ f.name }}</td>
+      <td style="padding:4px 10px; color:var(--muted)">{{ f.description }}</td>
+      <td class="mono" style="text-align:right; padding:4px 0 4px 10px;
+          color:{{ 'var(--red)' if f.contribution > 0.1 else ('var(--yellow)' if f.contribution > 0 else 'var(--muted)') }}">
+        {{ c_pct }}%
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <div class="muted" style="font-size:11px; margin-top:10px">
+    Generated: {{ fmt_dt(rr.get('generated_at')) }}
+  </div>
+</div>
+{% endif %}
+
+<!-- Cost report -->
+{% if cost_report %}
+{% set cr = cost_report %}
+<div class="card" style="margin-bottom:18px">
+  <div class="card-title" style="display:flex; justify-content:space-between; align-items:center">
+    <span>Compute Cost Estimate</span>
+    <span class="mono" style="font-size:15px; color:var(--text); font-weight:700">
+      ${{ "%.4f" | format(cr.get('total_cost_usd', 0)) }}
+    </span>
+  </div>
+  {% if cr.get('entries') %}
+  <div class="table-wrap">
+  <table style="font-size:12.5px">
+    <thead>
+      <tr>
+        <th>Step</th>
+        <th>Runner</th>
+        <th>Compute</th>
+        <th style="text-align:right">Duration (min)</th>
+        <th style="text-align:right">Cost (USD)</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for e in cr.entries %}
+    <tr>
+      <td class="mono">{{ e.step }}</td>
+      <td class="muted">{{ e.runner or '—' }}</td>
+      <td class="muted">{{ e.compute_type or '—' }}</td>
+      <td class="mono" style="text-align:right">{{ "%.1f" | format((e.duration_seconds or 0) / 60) }}</td>
+      <td class="mono" style="text-align:right">${{ "%.4f" | format(e.cost_usd or 0) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="muted" style="font-size:12.5px">No cost entries recorded.</p>
+  {% endif %}
+  <div class="muted" style="font-size:11px; margin-top:10px">
+    Generated: {{ fmt_dt(cr.get('generated_at')) }}
+    {% if cr.get('currency') %}&nbsp;·&nbsp; Currency: {{ cr.currency }}{% endif %}
+  </div>
+</div>
+{% endif %}
 
 <!-- Audit log -->
 <div class="card">
@@ -145,6 +396,16 @@
 
 {% block scripts %}
 <script>
+  // ── Step output accordion ─────────────────────────────────────────────────
+  function toggleStepDetail(step) {
+    const row = document.getElementById('step-detail-' + step);
+    if (!row) return;
+    const isHidden = row.style.display === 'none';
+    row.style.display = isHidden ? '' : 'none';
+    const arrow = document.querySelector('[data-step="' + step + '"] .step-name span:last-child');
+    if (arrow) arrow.textContent = isHidden ? '▾' : '▸';
+  }
+
   (function() {
     const initialStatus = {{ state.get('status', 'unknown') | tojson }};
     if (initialStatus !== 'running') return;
@@ -172,6 +433,61 @@
       // Fallback: reload after 5 s to show latest state
       setTimeout(function() { window.location.reload(); }, 5000);
     };
+  })();
+
+  // ── Live audit log (only while running) ────────────────────────────────────
+  (function() {
+    const initialStatus = {{ state.get('status', 'unknown') | tojson }};
+    if (initialStatus !== 'running') return;
+    const wfId = {{ state.workflow_id | tojson }};
+    let knownTotal = {{ audit_log | length }};
+
+    const ICONS = {
+      workflow_started: '▶', workflow_resumed: '↩', workflow_finished: '■',
+      workflow_already_completed: '✓', step_started: '→', step_finished: '✓',
+      step_exception: '✕', workflow_failed_precheck: '✕',
+    };
+    function iconClass(ev) {
+      if (['step_finished','workflow_finished','workflow_already_completed'].includes(ev)) return 'ok';
+      if (ev.includes('exception') || ev.includes('fail')) return 'err';
+      return 'info';
+    }
+    function fmtTs(ts) {
+      if (!ts) return '';
+      try { return new Date(ts).toISOString().slice(0,16).replace('T',' '); } catch(e) { return ts.slice(0,16); }
+    }
+    function renderEntry(entry) {
+      const ev = entry.event || '';
+      const parts = [];
+      if (entry.step) parts.push('<strong>' + entry.step + '</strong>');
+      if (entry.status) parts.push('status: ' + entry.status);
+      if (entry.error) parts.push('<span style="color:var(--red)">' + entry.error + '</span>');
+      parts.push(fmtTs(entry.timestamp));
+      const li = document.createElement('li');
+      li.innerHTML = '<span class="timeline-icon ' + iconClass(ev) + '">' + (ICONS[ev] || '·') + '</span>'
+        + '<div class="timeline-body"><div class="timeline-event">' + ev + '</div>'
+        + '<div class="timeline-meta">' + parts.join(' · ') + '</div></div>';
+      return li;
+    }
+
+    function pollAudit() {
+      fetch('/api/workflows/' + encodeURIComponent(wfId) + '/audit?since=' + knownTotal)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.total > knownTotal) {
+            const timeline = document.querySelector('.timeline');
+            const newCount = data.total - knownTotal;
+            const newEntries = (data.entries || []).slice(0, newCount);
+            newEntries.forEach(function(entry) {
+              timeline.insertBefore(renderEntry(entry), timeline.firstChild);
+            });
+            knownTotal = data.total;
+          }
+        })
+        .catch(function() {});
+    }
+
+    setInterval(pollAudit, 3000);
   })();
 </script>
 {% endblock %}

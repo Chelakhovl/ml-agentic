@@ -264,9 +264,7 @@ class TestModelRegistryAgentGates:
         assert "rejected" in result.block_reason
 
     def test_gate_approval_action_not_approve_model(self, tmp_path: Path) -> None:
-        inp, _ = _make_registration_input(
-            tmp_path, approval_action="request_retraining"
-        )
+        inp, _ = _make_registration_input(tmp_path, approval_action="request_retraining")
         agent = ModelRegistryAgent(artifacts_dir=tmp_path / "artifacts")
         result = agent.run(inp)
         assert result.success is False
@@ -367,9 +365,7 @@ class TestLocalModelRegistryClient:
 
         assert r1.version == 1
         assert r2.version == 2
-        latest = json.loads(
-            (reg_dir / "test-model" / "latest.json").read_text(encoding="utf-8")
-        )
+        latest = json.loads((reg_dir / "test-model" / "latest.json").read_text(encoding="utf-8"))
         assert latest["version"] == 2
 
     def test_sha256_written_to_latest(self, tmp_path: Path) -> None:
@@ -426,13 +422,15 @@ class TestLocalModelRegistryClient:
         inp, reg_dir = _make_registration_input(tmp_path, with_weights=False)
         # Manually create training_output.json with a nonexistent path
         (tmp_path / "training" / "training_output.json").write_text(
-            json.dumps({
-                "success": True,
-                "job_status": "completed",
-                "best_weights_path": str(tmp_path / "nonexistent.pt"),
-                "runner": "local-yolo",
-                "job_id": "x",
-            }),
+            json.dumps(
+                {
+                    "success": True,
+                    "job_status": "completed",
+                    "best_weights_path": str(tmp_path / "nonexistent.pt"),
+                    "runner": "local-yolo",
+                    "job_id": "x",
+                }
+            ),
             encoding="utf-8",
         )
         agent = ModelRegistryAgent(
@@ -775,9 +773,7 @@ class TestCreateRegistryClient:
         assert isinstance(create_registry_client(RegistryBackend.LOCAL), LocalModelRegistryClient)
 
     def test_mlflow_backend(self) -> None:
-        assert isinstance(
-            create_registry_client(RegistryBackend.MLFLOW), MLflowModelRegistryClient
-        )
+        assert isinstance(create_registry_client(RegistryBackend.MLFLOW), MLflowModelRegistryClient)
 
     def test_azure_ml_backend_raises_without_config(self) -> None:
         with pytest.raises(ValueError, match="AzureMLConfig"):
@@ -962,9 +958,7 @@ class TestMVPWorkflowStep5:
             _validation_factory=lambda d: _StubAgent(d, _val_ok()),
             _training_factory=lambda d: _StubAgent(d, _train_ok()),
             _evaluation_factory=lambda d: _StubAgent(d, _eval_ok()),
-            _approval_factory=lambda d: _StubAgent(
-                d, approval_result or _approval_ok()
-            ),
+            _approval_factory=lambda d: _StubAgent(d, approval_result or _approval_ok()),
             _registry_factory=lambda d: reg_agent_to_use,
         )
         inp = MVPWorkflowInput(
@@ -1062,12 +1056,18 @@ class TestRegisterModelCLI:
             app,
             [
                 "register-model",
-                "--model-name", "cli-test-model",
-                "--training-output", str(train_dir / "training_output.json"),
-                "--evaluation-output", str(eval_dir / "evaluation_output.json"),
-                "--approval-decision", str(approval_dir / "approval_decision.json"),
-                "--registry-dir", str(reg_dir),
-                "--output-dir", str(tmp_path / "artifacts"),
+                "--model-name",
+                "cli-test-model",
+                "--training-output",
+                str(train_dir / "training_output.json"),
+                "--evaluation-output",
+                str(eval_dir / "evaluation_output.json"),
+                "--approval-decision",
+                str(approval_dir / "approval_decision.json"),
+                "--registry-dir",
+                str(reg_dir),
+                "--output-dir",
+                str(tmp_path / "artifacts"),
             ],
         )
         assert result.exit_code == 0
@@ -1091,12 +1091,18 @@ class TestRegisterModelCLI:
             app,
             [
                 "register-model",
-                "--model-name", "cli-test-model",
-                "--training-output", str(train_dir / "training_output.json"),
-                "--evaluation-output", str(eval_dir / "evaluation_output.json"),
-                "--approval-decision", str(approval_dir / "approval_decision.json"),
-                "--registry-dir", str(reg_dir),
-                "--output-dir", str(tmp_path / "artifacts"),
+                "--model-name",
+                "cli-test-model",
+                "--training-output",
+                str(train_dir / "training_output.json"),
+                "--evaluation-output",
+                str(eval_dir / "evaluation_output.json"),
+                "--approval-decision",
+                str(approval_dir / "approval_decision.json"),
+                "--registry-dir",
+                str(reg_dir),
+                "--output-dir",
+                str(tmp_path / "artifacts"),
             ],
         )
         assert result.exit_code == 1
@@ -1107,11 +1113,16 @@ class TestRegisterModelCLI:
             app,
             [
                 "register-model",
-                "--model-name", "bad/name",
-                "--training-output", "/a",
-                "--evaluation-output", "/b",
-                "--approval-decision", "/c",
-                "--registry-dir", str(tmp_path / "registry"),
+                "--model-name",
+                "bad/name",
+                "--training-output",
+                "/a",
+                "--evaluation-output",
+                "/b",
+                "--approval-decision",
+                "/c",
+                "--registry-dir",
+                str(tmp_path / "registry"),
             ],
         )
         assert result.exit_code != 0
@@ -1131,12 +1142,18 @@ class TestRegisterModelAzureMLCLI:
             app,
             [
                 "register-model",
-                "--model-name", "m",
-                "--training-output", "/a",
-                "--evaluation-output", "/b",
-                "--approval-decision", "/c",
-                "--registry-dir", str(tmp_path / "registry"),
-                "--backend", "azure_ml",
+                "--model-name",
+                "m",
+                "--training-output",
+                "/a",
+                "--evaluation-output",
+                "/b",
+                "--approval-decision",
+                "/c",
+                "--registry-dir",
+                str(tmp_path / "registry"),
+                "--backend",
+                "azure_ml",
             ],
         )
         assert result.exit_code == 1
@@ -1179,14 +1196,22 @@ class TestRegisterModelAzureMLCLI:
                 app,
                 [
                     "register-model",
-                    "--model-name", "cli-azure-model",
-                    "--training-output", str(train_dir / "training_output.json"),
-                    "--evaluation-output", str(eval_dir / "evaluation_output.json"),
-                    "--approval-decision", str(approval_dir / "approval_decision.json"),
-                    "--registry-dir", str(tmp_path / "registry"),
-                    "--backend", "azure_ml",
-                    "--azure-config", str(azure_cfg_path),
-                    "--output-dir", str(tmp_path / "artifacts"),
+                    "--model-name",
+                    "cli-azure-model",
+                    "--training-output",
+                    str(train_dir / "training_output.json"),
+                    "--evaluation-output",
+                    str(eval_dir / "evaluation_output.json"),
+                    "--approval-decision",
+                    str(approval_dir / "approval_decision.json"),
+                    "--registry-dir",
+                    str(tmp_path / "registry"),
+                    "--backend",
+                    "azure_ml",
+                    "--azure-config",
+                    str(azure_cfg_path),
+                    "--output-dir",
+                    str(tmp_path / "artifacts"),
                 ],
             )
 

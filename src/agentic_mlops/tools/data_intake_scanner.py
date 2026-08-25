@@ -35,9 +35,7 @@ class DataIntakeScanner:
         logger.info("Starting data intake scan", extra={"raw_data_path": str(raw_dir)})
 
         if not raw_dir.is_dir():
-            return _failed(
-                f"raw_data_path not found or not a directory: {raw_dir}", inp
-            )
+            return _failed(f"raw_data_path not found or not a directory: {raw_dir}", inp)
 
         all_files = sorted(p for p in raw_dir.rglob("*") if p.is_file())
         if not all_files:

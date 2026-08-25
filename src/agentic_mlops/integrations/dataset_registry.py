@@ -71,8 +71,7 @@ class DatasetVersionRegistryClientBase(ABC):
         validation_status: str | None,
         label_qa_status: str | None,
         artifacts_dir: Path,
-    ) -> DatasetVersioningOutput:
-        ...
+    ) -> DatasetVersioningOutput: ...
 
 
 class LocalDatasetVersionRegistry(DatasetVersionRegistryClientBase):
@@ -110,8 +109,7 @@ class LocalDatasetVersionRegistry(DatasetVersionRegistryClientBase):
                 return DatasetVersioningOutput(
                     success=True,
                     message=(
-                        f"Dataset content matches existing version {v} — "
-                        "no new version created."
+                        f"Dataset content matches existing version {v} — " "no new version created."
                     ),
                     status=DatasetVersionStatus.DEDUPLICATED,
                     dataset_name=inp.dataset_name,
@@ -125,6 +123,21 @@ class LocalDatasetVersionRegistry(DatasetVersionRegistryClientBase):
         version = (existing_versions[-1] + 1) if existing_versions else 1
         version_dir = versions_dir / str(version)
         dataset_copy_dir = version_dir / "dataset"
+
+        # Extract quality summary from validation report when available.
+        quality_summary: dict | None = None
+        if inp.validation_report_path:
+            try:
+                vdata = json.loads(Path(inp.validation_report_path).read_text(encoding="utf-8"))
+                quality_summary = {
+                    "num_images": vdata.get("num_images"),
+                    "num_labels": vdata.get("num_labels"),
+                    "class_distribution": vdata.get("class_distribution") or {},
+                    "blocking_issues_count": len(vdata.get("blocking_issues") or []),
+                    "label_issues_count": len(vdata.get("label_issues") or []),
+                }
+            except (OSError, json.JSONDecodeError):
+                pass  # best-effort; lineage still valid without quality summary
 
         try:
             shutil.copytree(dataset_path, dataset_copy_dir)
@@ -143,6 +156,7 @@ class LocalDatasetVersionRegistry(DatasetVersionRegistryClientBase):
                 label_qa_status=label_qa_status,
                 registered_at=registered_at,
                 source_dataset_path=str(dataset_path),
+                quality_summary=quality_summary,
             )
 
             lineage_path = version_dir / "lineage.json"
@@ -268,6 +282,7 @@ class AzureMLDatasetRegistryClient(DatasetVersionRegistryClientBase):
             from agentic_mlops.integrations.azure_ml_client import (  # noqa: PLC0415
                 DefaultAzureMLClientFactory,
             )
+
             client_factory = DefaultAzureMLClientFactory()
         self._factory = client_factory
 

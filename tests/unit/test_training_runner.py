@@ -328,11 +328,16 @@ def test_cli_runner_fake_produces_dry_run(tmp_path, cli_dataset):
         app,
         [
             "train",
-            "--dataset-path", str(ds),
-            "--data-yaml", str(data_yaml),
-            "--training-config", str(cfg_path),
-            "--output-dir", str(out_dir),
-            "--runner", "fake",
+            "--dataset-path",
+            str(ds),
+            "--data-yaml",
+            str(data_yaml),
+            "--training-config",
+            str(cfg_path),
+            "--output-dir",
+            str(out_dir),
+            "--runner",
+            "fake",
         ],
     )
     assert r.exit_code == 0, r.output
@@ -355,11 +360,16 @@ def test_cli_runner_local_yolo_sets_local_train_mode(
             app,
             [
                 "train",
-                "--dataset-path", str(ds),
-                "--data-yaml", str(data_yaml),
-                "--training-config", str(cfg_path),
-                "--output-dir", str(out_dir),
-                "--runner", "local-yolo",
+                "--dataset-path",
+                str(ds),
+                "--data-yaml",
+                str(data_yaml),
+                "--training-config",
+                str(cfg_path),
+                "--output-dir",
+                str(out_dir),
+                "--runner",
+                "local-yolo",
             ],
         )
 
@@ -405,10 +415,14 @@ def test_cli_runner_unknown_exits_nonzero(tmp_path, cli_dataset):
         app,
         [
             "train",
-            "--dataset-path", str(ds),
-            "--data-yaml", str(data_yaml),
-            "--training-config", str(cfg_path),
-            "--runner", "azure",
+            "--dataset-path",
+            str(ds),
+            "--data-yaml",
+            str(data_yaml),
+            "--training-config",
+            str(cfg_path),
+            "--runner",
+            "azure",
         ],
     )
     assert r.exit_code != 0

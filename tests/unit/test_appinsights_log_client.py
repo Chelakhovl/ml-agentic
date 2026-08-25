@@ -88,9 +88,7 @@ def _make_record(
 
 def _write_log(tmp_path: Path, records: list[dict], name: str = "preds.jsonl") -> Path:
     p = tmp_path / name
-    p.write_text(
-        "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
-    )
+    p.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
     return p
 
 
@@ -229,8 +227,13 @@ class TestRowsToRecords:
     def test_class_id_normalised_to_class(self) -> None:
         table = self._make_table(
             rows=[
-                ("2026-07-10T00:00:00Z", "img.jpg", 10.0, False,
-                 '[{"class_id": 2, "confidence": 0.8}]'),
+                (
+                    "2026-07-10T00:00:00Z",
+                    "img.jpg",
+                    10.0,
+                    False,
+                    '[{"class_id": 2, "confidence": 0.8}]',
+                ),
             ],
             col_names=["log_timestamp", "image_id", "latency_ms", "is_error", "detections_json"],
         )
@@ -330,9 +333,7 @@ class TestApplicationInsightsLogClient:
         assert any("FAILURE" in w for w in warnings)
 
     def test_query_exception_returns_empty_and_warning(self) -> None:
-        ai_client, fq, _ = self._build_client(
-            raise_on_query=RuntimeError("network error")
-        )
+        ai_client, fq, _ = self._build_client(raise_on_query=RuntimeError("network error"))
         with patch.dict(sys.modules, {"azure.monitor.query": fq}):
             records, warnings = ai_client.fetch_records()
         assert records == []
@@ -357,9 +358,7 @@ class TestModelMonitorWithInjectedClient:
         assert result.success is True
         assert result.total_predictions == 1
 
-    def test_azure_monitor_source_without_workspace_id_fails(
-        self, tmp_path: Path
-    ) -> None:
+    def test_azure_monitor_source_without_workspace_id_fails(self, tmp_path: Path) -> None:
         from agentic_mlops.contracts.monitoring import MonitoringInput, MonitoringStatus
         from agentic_mlops.tools.monitor import ModelMonitor
 
@@ -372,9 +371,7 @@ class TestModelMonitorWithInjectedClient:
         assert result.status == MonitoringStatus.FAILED
         assert "app_insights_workspace_id" in result.message
 
-    def test_azure_monitor_source_with_injected_client_runs_normally(
-        self, tmp_path: Path
-    ) -> None:
+    def test_azure_monitor_source_with_injected_client_runs_normally(self, tmp_path: Path) -> None:
         from agentic_mlops.contracts.monitoring import MonitoringInput
         from agentic_mlops.tools.monitor import ModelMonitor
 
@@ -392,9 +389,7 @@ class TestModelMonitorWithInjectedClient:
         assert result.success is True
         assert result.endpoint_name == "ep"
 
-    def test_injected_client_warnings_propagate_to_output(
-        self, tmp_path: Path
-    ) -> None:
+    def test_injected_client_warnings_propagate_to_output(self, tmp_path: Path) -> None:
         from agentic_mlops.contracts.monitoring import MonitoringInput
         from agentic_mlops.tools.monitor import ModelMonitor
 
@@ -465,9 +460,12 @@ class TestCLIMonitorExtensions:
             app,
             [
                 "monitor",
-                "--endpoint-name", "ep",
-                "--source", "azure-monitor",
-                "--output-dir", str(tmp_path / "out"),
+                "--endpoint-name",
+                "ep",
+                "--source",
+                "azure-monitor",
+                "--output-dir",
+                str(tmp_path / "out"),
             ],
         )
         assert result.exit_code == 1
@@ -482,9 +480,12 @@ class TestCLIMonitorExtensions:
             app,
             [
                 "monitor",
-                "--endpoint-name", "ep",
-                "--source", "kafka",
-                "--output-dir", str(tmp_path / "out"),
+                "--endpoint-name",
+                "ep",
+                "--source",
+                "kafka",
+                "--output-dir",
+                str(tmp_path / "out"),
             ],
         )
         assert result.exit_code == 1
@@ -501,8 +502,10 @@ class TestCLIMonitorExtensions:
             [
                 "monitor",
                 str(log),
-                "--endpoint-name", "ep",
-                "--output-dir", str(tmp_path / "out"),
+                "--endpoint-name",
+                "ep",
+                "--output-dir",
+                str(tmp_path / "out"),
             ],
         )
         assert result.exit_code == 0, result.output

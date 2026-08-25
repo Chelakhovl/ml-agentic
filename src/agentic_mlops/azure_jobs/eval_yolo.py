@@ -27,9 +27,7 @@ from pathlib import Path
 import yaml
 
 
-def _generate_runtime_data_yaml(
-    dataset_path: str, source_data_yaml: str, output_dir: Path
-) -> Path:
+def _generate_runtime_data_yaml(dataset_path: str, source_data_yaml: str, output_dir: Path) -> Path:
     """Generate a data.yaml at output_dir/runtime_data.yaml referencing the Azure mount path."""
     with open(source_data_yaml, encoding="utf-8") as fh:
         src = yaml.safe_load(fh) or {}
@@ -74,9 +72,7 @@ def _extract_metrics(results, class_names: list[str]) -> dict:
         names = getattr(results, "names", {}) or {}
         for i, cls_idx in enumerate(ap_class_index):
             idx = int(cls_idx)
-            cls_name = names.get(idx) or (
-                class_names[idx] if idx < len(class_names) else str(idx)
-            )
+            cls_name = names.get(idx) or (class_names[idx] if idx < len(class_names) else str(idx))
             per_class[cls_name] = {
                 "precision": float(p_list[i]) if p_list is not None and i < len(p_list) else 0.0,
                 "recall": float(r_list[i]) if r_list is not None and i < len(r_list) else 0.0,

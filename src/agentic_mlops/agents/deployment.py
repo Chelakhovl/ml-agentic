@@ -51,9 +51,7 @@ class DeploymentAgent(BaseAgent):
 
         output = self._deployer.deploy(input, self.artifacts_dir)
 
-        json_path, md_path = self._report_writer.write_deployment_report(
-            output, self.artifacts_dir
-        )
+        json_path, md_path = self._report_writer.write_deployment_report(output, self.artifacts_dir)
         output.deployment_report_path = str(json_path)
         for p in (str(json_path), str(md_path)):
             if p not in output.artifacts:
@@ -85,10 +83,13 @@ class DeploymentAgent(BaseAgent):
         if output.release is not None:
             client.log_metrics(rid, {"deployment.release": float(output.release)})
 
-        client.log_tags(rid, {
-            "workflow_step": "deployment",
-            "deployment_status": str(output.status),
-        })
+        client.log_tags(
+            rid,
+            {
+                "workflow_step": "deployment",
+                "deployment_status": str(output.status),
+            },
+        )
 
         for artifact_path in output.artifacts:
             client.log_artifact(rid, artifact_path)

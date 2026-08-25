@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Hard Samples — MLOps{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Hard Samples</h1>
+  <p>Aggregated hard samples across all monitoring runs — images with low confidence or zero detections</p>
+</div>
+
+<div class="stat-row">
+  <div class="stat-card {{ 'red' if total_count > 0 else 'green' }}">
+    <div class="stat-label">Total Hard Samples</div>
+    <div class="stat-value">{{ total_count }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Monitored Workflows</div>
+    <div class="stat-value">{{ manifests | length }}</div>
+  </div>
+  {% if top_workflow and top_workflow.count > 0 %}
+  <div class="stat-card orange">
+    <div class="stat-label">Most Affected Run</div>
+    <div class="stat-value" style="font-size:18px">{{ top_workflow.count }}</div>
+    <div class="muted" style="font-size:11px; margin-top:4px">{{ top_workflow.workflow_id }} / {{ top_workflow.step }}</div>
+  </div>
+  {% endif %}
+</div>
+
+{% if not manifests %}
+<div class="card">
+  <div class="empty-state">
+    <div class="empty-icon">✅</div>
+    <p>No hard sample manifests found.<br>
+       Hard samples are written by <code>agentic-mlops monitor</code> when low-confidence predictions are detected.</p>
+  </div>
+</div>
+
+{% else %}
+
+{% for m in manifests %}
+{% if m.count > 0 %}
+<div class="card" style="margin-bottom:18px">
+  <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px">
+    <span>
+      <a href="/workflows/{{ m.workflow_id }}" class="table-link" style="font-size:inherit; font-weight:inherit">{{ m.workflow_id }}</a>
+      <span class="muted" style="text-transform:none; font-weight:400; font-size:12px; margin-left:6px">/ {{ m.step }}</span>
+      <span class="badge badge-failed" style="margin-left:10px">{{ m.count }} hard sample{{ 's' if m.count != 1 }}</span>
+    </span>
+    <a href="/monitoring/{{ m.workflow_id }}/{{ m.step }}" class="table-link" style="font-size:12.5px; text-transform:none; font-weight:400">
+      Monitoring detail →
+    </a>
+  </div>
+
+  <div class="table-wrap">
+    <table style="font-size:12.5px">
+      <thead>
+        <tr>
+          <th>Image ID</th>
+          <th>Timestamp</th>
+          <th style="text-align:center">Detections</th>
+          <th style="text-align:right">Min Confidence</th>
+          <th>Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for s in m.samples[:20] %}
+      {% set conf = s.get('min_confidence') %}
+      <tr>
+        <td class="mono" style="font-size:11.5px; color:var(--accent)">{{ s.get('image_id', '—') }}</td>
+        <td class="muted" style="font-size:12px">{{ fmt_dt(s.get('timestamp')) }}</td>
+        <td style="text-align:center">
+          {% set nd = s.get('num_detections', 0) %}
+          <span {% if nd == 0 %}style="color:var(--orange)"{% endif %}>{{ nd }}</span>
+        </td>
+        <td style="text-align:right; font-weight:600;
+                   {% if conf is not none %}{% if conf < 0.3 %}color:var(--red){% elif conf < 0.5 %}color:var(--orange){% endif %}{% endif %}">
+          {{ "%.3f" | format(conf) if conf is not none else '—' }}
+        </td>
+        <td class="muted">{{ s.get('reason', '—') }}</td>
+      </tr>
+      {% endfor %}
+      {% if m.samples | length > 20 %}
+      <tr>
+        <td colspan="5" class="muted" style="text-align:center; padding:10px; font-size:12px">
+          … and {{ m.samples | length - 20 }} more —
+          <a href="/monitoring/{{ m.workflow_id }}/{{ m.step }}" class="table-link">see full list</a>
+        </td>
+      </tr>
+      {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  {% set manifest_path = 'runs/' ~ m.workflow_id ~ '/artifacts/' ~ m.step ~ '/hard_samples_manifest.json' %}
+  <details style="margin-top:12px">
+    <summary style="cursor:pointer; font-size:12px; color:var(--muted)">Ingest command</summary>
+    <div style="position:relative; margin-top:8px">
+      <pre style="background:var(--bg); border:1px solid var(--border); border-radius:var(--radius);
+                  padding:10px 44px 10px 12px; font-size:11.5px; white-space:pre-wrap; word-break:break-all; margin:0" id="ingestCmd_{{ loop.index }}">agentic-mlops ingest-hard-samples {{ manifest_path }} \
+  --images-source-dir /path/to/original/images \
+  --dataset-name hard_samples_retraining \
+  --output-dir runs/{{ m.workflow_id }}/artifacts/hard_sample_ingestion</pre>
+      <button onclick="navigator.clipboard.writeText(document.getElementById('ingestCmd_{{ loop.index }}').innerText)"
+              style="position:absolute; top:6px; right:6px; background:var(--accent); color:#fff;
+                     border:none; border-radius:4px; padding:3px 8px; font-size:11px; cursor:pointer">
+        Copy
+      </button>
+    </div>
+  </details>
+</div>
+{% endif %}
+{% endfor %}
+
+{% set empty_manifests = manifests | selectattr('count', 'equalto', 0) | list %}
+{% if empty_manifests %}
+<div class="card">
+  <div class="card-title">Clean Runs ({{ empty_manifests | length }})</div>
+  <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:4px">
+    {% for m in empty_manifests %}
+    <a href="/monitoring/{{ m.workflow_id }}/{{ m.step }}" class="table-link mono" style="font-size:12px; padding:4px 10px; border:1px solid var(--border); border-radius:8px; background:#d4f5de; color:#1a7a32">
+      ✓ {{ m.workflow_id }}
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}

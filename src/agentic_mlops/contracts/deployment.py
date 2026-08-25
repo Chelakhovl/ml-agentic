@@ -15,7 +15,7 @@ class DeploymentTarget(StrEnum):
 
 
 class ExportFormat(StrEnum):
-    PT = "pt"      # passthrough copy, no conversion — useful for local-only serving
+    PT = "pt"  # passthrough copy, no conversion — useful for local-only serving
     ONNX = "onnx"  # real Ultralytics export, requires the `onnx` package
 
 
@@ -27,8 +27,10 @@ class DeploymentStatus(StrEnum):
 
 
 class DeploymentBackend(StrEnum):
-    LOCAL = "local"        # export + smoke test + versioned local release directory
+    LOCAL = "local"  # export + smoke test + versioned local release directory
     AZURE_ML = "azure_ml"  # real Managed Online Endpoint via the Azure ML SDK v2
+    DOCKER = "docker"  # build + push Docker image to a container registry
+    AKS = "aks"  # docker build+push then kubectl apply to AKS
 
 
 class DeploymentInput(BaseModel):
@@ -56,6 +58,14 @@ class DeploymentInput(BaseModel):
     azure_model_name: str | None = None
     azure_model_version: int | None = None
 
+    # ── backend="docker" / "aks" ─────────────────────────────────────────────
+    # DockerConfig and AksConfig are injected as objects by the CLI rather than
+    # stored in this contract — same "needs external connection info, inject
+    # explicitly" pattern as AzureMLConfig. These path fields are convenience
+    # pointers for the CLI to load configs from disk.
+    docker_config_path: str | None = None
+    aks_config_path: str | None = None
+
 
 class DeploymentOutput(ToolResult):
     status: DeploymentStatus = DeploymentStatus.FAILED
@@ -66,6 +76,10 @@ class DeploymentOutput(ToolResult):
     deployment_report_path: str | None = None
     block_reason: str | None = None
 
-    # backend="azure_ml" only
+    # backend="azure_ml" / "aks" only
     scoring_uri: str | None = None
     azure_deployment_name: str | None = None
+
+    # backend="docker" / "aks" only
+    image_tag: str | None = None
+    k8s_deployment_name: str | None = None

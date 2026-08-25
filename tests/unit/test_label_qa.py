@@ -66,6 +66,7 @@ class _FakeModel:
 def _fake_model_cls(dets: list[tuple[int, float, float, float, float, float]]):
     def _cls(path):  # noqa: ANN001
         return _FakeModel(dets)
+
     return _cls
 
 
@@ -256,9 +257,7 @@ def test_reference_model_flags_unmatched_prediction(tmp_path: Path) -> None:
     # Prediction at a totally different location -> IoU 0 with the human box
     fake_cls = _fake_model_cls([(0, 0.1, 0.1, 0.1, 0.1, 0.9)])
 
-    with patch(
-        "agentic_mlops.tools.label_qa_checker._load_reference_model", return_value=fake_cls
-    ):
+    with patch("agentic_mlops.tools.label_qa_checker._load_reference_model", return_value=fake_cls):
         result = LabelQAChecker().check(
             LabelQAInput(dataset_path=str(root), reference_model_path="fake.pt")
         )
@@ -273,9 +272,7 @@ def test_reference_model_match_not_flagged(tmp_path: Path) -> None:
     # Prediction matches the human box almost exactly -> high IoU, no disagreement
     fake_cls = _fake_model_cls([(0, 0.5, 0.5, 0.2, 0.2, 0.9)])
 
-    with patch(
-        "agentic_mlops.tools.label_qa_checker._load_reference_model", return_value=fake_cls
-    ):
+    with patch("agentic_mlops.tools.label_qa_checker._load_reference_model", return_value=fake_cls):
         result = LabelQAChecker().check(
             LabelQAInput(dataset_path=str(root), reference_model_path="fake.pt")
         )

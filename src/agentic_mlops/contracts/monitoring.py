@@ -25,9 +25,9 @@ class RecommendedAction(StrEnum):
 
 
 class MonitoringStatus(StrEnum):
-    COMPLETED = "completed"          # no thresholds breached
+    COMPLETED = "completed"  # no thresholds breached
     ALERTS_TRIGGERED = "alerts_triggered"  # ran fine, but one or more triggers fired
-    FAILED = "failed"                # structural problem (bad path, bad window, ...)
+    FAILED = "failed"  # structural problem (bad path, bad window, ...)
 
 
 class MonitoringThresholds(BaseModel):

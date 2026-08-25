@@ -27,15 +27,15 @@
 </div>
 
 <div class="card">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:8px">
     <div class="card-title" style="margin-bottom:0">Recent Workflows</div>
     {% if workflows %}
-    <div style="display:flex; gap:10px; align-items:center">
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
       <input
         type="text"
         id="filterText"
         placeholder="Filter by ID…"
-        style="width:200px; padding:7px 11px; border:1px solid var(--border); border-radius:8px; font-size:13px; outline:none"
+        style="width:170px; padding:7px 11px; border:1px solid var(--border); border-radius:8px; font-size:13px; outline:none"
         oninput="applyFilter()"
       >
       <select
@@ -50,6 +50,18 @@
         <option value="failed">Failed</option>
         <option value="blocked">Blocked</option>
       </select>
+      <input
+        type="text"
+        id="filterTag"
+        list="tag-suggestions"
+        placeholder="tag key=value…"
+        style="width:160px; padding:7px 11px; border:1px solid var(--border); border-radius:8px; font-size:13px; outline:none"
+        oninput="applyFilter()"
+        title="Filter by tag, e.g. env=prod or just env"
+      >
+      <datalist id="tag-suggestions"></datalist>
+      <button id="compareBtn" class="btn btn-secondary btn-sm" onclick="doCompare()" disabled
+              style="display:none; gap:5px">⇄ Compare selected</button>
       <span id="filterCount" class="muted" style="font-size:12px; white-space:nowrap"></span>
     </div>
     {% endif %}
@@ -60,28 +72,54 @@
     <table id="wfTable">
       <thead>
         <tr>
+          <th style="width:36px; padding:10px 8px"><span title="Select for comparison" style="color:var(--muted); font-size:11px">Cmp</span></th>
           <th>Workflow ID</th>
           <th>Status</th>
           <th>Steps</th>
           <th>Current State</th>
-          <th>Last Agent</th>
+          <th>Tags</th>
           <th>Started</th>
         </tr>
       </thead>
       <tbody>
         {% for wf in workflows %}
-        <tr data-wf-id="{{ wf.workflow_id | lower }}" data-status="{{ wf.get('status', '') }}">
+        <tr
+          data-wf-id="{{ wf.workflow_id | lower }}"
+          data-status="{{ wf.get('status', '') }}"
+          data-wf-real-id="{{ wf.workflow_id }}"
+          data-tags="{{ wf.get('tags', {}) | tojson | lower }}"
+        >
+          <td style="padding:11px 8px; text-align:center">
+            <input type="checkbox" class="cmp-check" data-id="{{ wf.workflow_id }}"
+                   style="width:auto; cursor:pointer" onchange="updateCompareBtn()">
+          </td>
           <td>
             <a href="/workflows/{{ wf.workflow_id }}" class="table-link mono">{{ wf.workflow_id }}</a>
           </td>
-          <td><span class="badge {{ status_class(wf.get('status', '')) }}">{{ wf.get('status', '—') }}</span></td>
+          <td>
+            <span
+              class="badge {{ status_class(wf.get('status', '')) }}"
+              id="badge-{{ wf.workflow_id }}"
+            >{{ wf.get('status', '—') }}</span>
+          </td>
           <td class="muted mono" style="font-size:11.5px">
             {% set steps = wf.get('steps', []) %}
             {% set done = wf.get('completed_steps', []) | length %}
-            {{ done }}/{{ steps | length }}
+            <span id="steps-{{ wf.workflow_id }}">{{ done }}/{{ steps | length }}</span>
           </td>
           <td class="muted mono" style="font-size:11.5px">{{ wf.get('current_state', '—') }}</td>
-          <td class="muted">{{ wf.get('last_agent') or '—' }}</td>
+          <td>
+            {% set wf_tags = wf.get('tags', {}) %}
+            {% if wf_tags %}
+            <div style="display:flex; flex-wrap:wrap; gap:4px">
+              {% for k, v in wf_tags.items() %}
+              <span style="background:#e8f0fb; color:#004088; border-radius:12px; padding:2px 7px; font-size:11px; white-space:nowrap">{{ k }}={{ v }}</span>
+              {% endfor %}
+            </div>
+            {% else %}
+            <span class="muted">—</span>
+            {% endif %}
+          </td>
           <td class="muted">{{ fmt_dt(wf.get('started_at')) }}</td>
         </tr>
         {% endfor %}
@@ -89,6 +127,20 @@
     </table>
   </div>
   <p id="filterEmpty" class="muted" style="padding:16px; display:none; text-align:center">No workflows match the current filter.</p>
+
+  <div id="paginationBar" style="display:flex; align-items:center; justify-content:space-between; padding:10px 2px; flex-wrap:wrap; gap:8px">
+    <span id="pageInfo" class="muted" style="font-size:12px"></span>
+    <div style="display:flex; align-items:center; gap:8px">
+      <select id="pageSizeSelect" onchange="_changePageSize()" style="padding:5px 9px; border:1px solid var(--border); border-radius:8px; font-size:12px; background:var(--surface); color:var(--text)">
+        <option value="20" selected>20 / page</option>
+        <option value="50">50 / page</option>
+        <option value="100">100 / page</option>
+        <option value="0">All</option>
+      </select>
+      <button id="prevBtn" class="btn btn-secondary btn-sm" onclick="_changePage(-1)" disabled>← Prev</button>
+      <button id="nextBtn" class="btn btn-secondary btn-sm" onclick="_changePage(1)">Next →</button>
+    </div>
+  </div>
   {% else %}
   <div class="empty-state">
     <div class="empty-icon">◈</div>
@@ -100,27 +152,182 @@
 
 {% block scripts %}
 <script>
+// ── Pagination state ──────────────────────────────────────────────────────────
+let _filteredRows = [];
+let _currentPage  = 1;
+let _pageSize     = 20;
+
+function _renderPage(page) {
+  _currentPage = page;
+  const ps = _pageSize;
+  const total = _filteredRows.length;
+
+  const allRows = document.querySelectorAll('#wfTable tbody tr');
+  allRows.forEach(r => r.style.display = 'none');
+
+  const start = ps === 0 ? 0 : (page - 1) * ps;
+  const end   = ps === 0 ? total : Math.min(start + ps, total);
+  for (let i = start; i < end; i++) {
+    _filteredRows[i].style.display = '';
+  }
+
+  const totalPages = ps === 0 ? 1 : Math.ceil(total / ps);
+  const infoEl  = document.getElementById('pageInfo');
+  const prevBtn = document.getElementById('prevBtn');
+  const nextBtn = document.getElementById('nextBtn');
+  const barEl   = document.getElementById('paginationBar');
+
+  if (infoEl) {
+    infoEl.textContent = total === 0
+      ? ''
+      : (ps === 0 ? 'Showing all ' + total : (start + 1) + '–' + end + ' of ' + total);
+  }
+  if (prevBtn) prevBtn.disabled = page <= 1;
+  if (nextBtn) nextBtn.disabled = page >= totalPages;
+  if (barEl) barEl.style.display = total === 0 ? 'none' : '';
+}
+
+function _changePage(delta) {
+  const ps = _pageSize;
+  const totalPages = ps === 0 ? 1 : Math.ceil(_filteredRows.length / ps);
+  const next = Math.max(1, Math.min(_currentPage + delta, totalPages));
+  _renderPage(next);
+}
+
+function _changePageSize() {
+  const sel = document.getElementById('pageSizeSelect');
+  _pageSize = parseInt(sel.value, 10);
+  _renderPage(1);
+}
+
+// ── Filter ────────────────────────────────────────────────────────────────────
 function applyFilter() {
-  const text = (document.getElementById('filterText').value || '').toLowerCase().trim();
-  const status = document.getElementById('filterStatus').value;
-  const rows = document.querySelectorAll('#wfTable tbody tr');
-  let visible = 0;
+  const text   = (document.getElementById('filterText').value  || '').toLowerCase().trim();
+  const status = (document.getElementById('filterStatus').value || '');
+  const tag    = (document.getElementById('filterTag').value   || '').toLowerCase().trim();
+  const rows   = document.querySelectorAll('#wfTable tbody tr');
+
+  _filteredRows = [];
   rows.forEach(row => {
-    const id = row.getAttribute('data-wf-id') || '';
-    const rowStatus = row.getAttribute('data-status') || '';
-    const show = (!text || id.includes(text)) && (!status || rowStatus === status);
-    row.style.display = show ? '' : 'none';
-    if (show) visible++;
+    const id       = row.getAttribute('data-wf-id') || '';
+    const rowSt    = row.getAttribute('data-status') || '';
+    const tagsJson = row.getAttribute('data-tags') || '{}';
+    let tagsStr = '';
+    try { tagsStr = JSON.stringify(JSON.parse(tagsJson)); } catch(e) { tagsStr = tagsJson; }
+
+    const textOk   = !text   || id.includes(text);
+    const statusOk = !status || rowSt === status;
+    let tagOk = true;
+    if (tag) {
+      if (tag.includes('=')) {
+        const [k, v] = tag.split('=', 2);
+        tagOk = tagsStr.includes('"' + k.trim() + '"') && tagsStr.includes('"' + v.trim() + '"');
+      } else {
+        tagOk = tagsStr.includes('"' + tag + '"');
+      }
+    }
+    if (textOk && statusOk && tagOk) _filteredRows.push(row);
   });
+
   const countEl = document.getElementById('filterCount');
   const emptyEl = document.getElementById('filterEmpty');
-  if (text || status) {
-    countEl.textContent = visible + ' of ' + rows.length + ' shown';
-    emptyEl.style.display = visible === 0 ? '' : 'none';
+  const anyFilter = text || status || tag;
+  if (anyFilter) {
+    countEl.textContent = _filteredRows.length + ' of ' + rows.length + ' shown';
+    emptyEl.style.display = _filteredRows.length === 0 ? '' : 'none';
   } else {
     countEl.textContent = '';
     emptyEl.style.display = 'none';
   }
+  _renderPage(1);
 }
+
+// ── Quick compare ─────────────────────────────────────────────────────────────
+function updateCompareBtn() {
+  const checked = document.querySelectorAll('.cmp-check:checked');
+  const btn = document.getElementById('compareBtn');
+  if (!btn) return;
+  btn.style.display = '';
+  btn.disabled = checked.length !== 2;
+  btn.textContent = checked.length === 2
+    ? '⇄ Compare selected'
+    : '⇄ Compare (' + checked.length + '/2)';
+}
+
+function doCompare() {
+  const checked = [...document.querySelectorAll('.cmp-check:checked')];
+  if (checked.length !== 2) return;
+  const a = checked[0].getAttribute('data-id');
+  const b = checked[1].getAttribute('data-id');
+  window.location.href = '/workflows/compare?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b);
+}
+
+// ── Tag autocomplete ──────────────────────────────────────────────────────────
+(function() {
+  const dl = document.getElementById('tag-suggestions');
+  if (!dl) return;
+  const seen = new Set();
+  document.querySelectorAll('#wfTable tbody tr[data-tags]').forEach(function(row) {
+    let tags;
+    try { tags = JSON.parse(row.getAttribute('data-tags')); } catch(e) { return; }
+    Object.entries(tags).forEach(function([k, v]) {
+      const kv = k + '=' + v;
+      if (!seen.has(k))  { seen.add(k);  const o = document.createElement('option'); o.value = k;  dl.appendChild(o); }
+      if (!seen.has(kv)) { seen.add(kv); const o = document.createElement('option'); o.value = kv; dl.appendChild(o); }
+    });
+  });
+})();
+
+// ── Auto-refresh running rows via SSE ─────────────────────────────────────────
+(function() {
+  const STATUS_CLASS = {
+    completed:        'badge-completed',
+    running:          'badge-running',
+    pending_approval: 'badge-pending',
+    failed:           'badge-failed',
+    blocked:          'badge-blocked',
+    skipped:          'badge-skipped',
+  };
+
+  document.querySelectorAll('#wfTable tbody tr').forEach(row => {
+    if (row.getAttribute('data-status') !== 'running') return;
+    const wfId = row.getAttribute('data-wf-real-id');
+    if (!wfId) return;
+
+    const es = new EventSource('/api/workflows/' + encodeURIComponent(wfId) + '/stream');
+
+    es.onmessage = function(event) {
+      let data;
+      try { data = JSON.parse(event.data); } catch(e) { return; }
+
+      // Update status badge
+      const badge = document.getElementById('badge-' + wfId);
+      if (badge) {
+        badge.textContent = data.status;
+        const cls = STATUS_CLASS[data.status] || 'badge-default';
+        badge.className = 'badge ' + cls;
+      }
+      // Update steps counter
+      const stepsEl = document.getElementById('steps-' + wfId);
+      if (stepsEl && data.completed_steps) {
+        const total = (data.completed_steps.length + Object.keys(data.step_status || {}).filter(k => !data.completed_steps.includes(k)).length);
+        stepsEl.textContent = data.completed_steps.length + '/' + total;
+      }
+      // Update row data-status for filter
+      row.setAttribute('data-status', data.status);
+
+      if (data.status !== 'running') {
+        es.close();
+        // Full reload after brief delay so user sees final status flash
+        setTimeout(() => window.location.reload(), 1500);
+      }
+    };
+
+    es.onerror = function() { es.close(); };
+  });
+})();
+
+// Initialize pagination on first load
+applyFilter();
 </script>
 {% endblock %}

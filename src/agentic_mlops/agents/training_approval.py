@@ -134,10 +134,13 @@ class TrainingApprovalAgent(BaseAgent):
         client.log_params(rid, params)
 
         client.log_metrics(rid, {"training_approval.num_images": float(num_images)})
-        client.log_tags(rid, {
-            "workflow_step": "training_approval",
-            "training_approval_status": str(output.status),
-        })
+        client.log_tags(
+            rid,
+            {
+                "workflow_step": "training_approval",
+                "training_approval_status": str(output.status),
+            },
+        )
         for artifact_path in output.artifacts:
             client.log_artifact(rid, artifact_path)
 
@@ -147,9 +150,7 @@ class TrainingApprovalAgent(BaseAgent):
         self, inp: TrainingApprovalInput, status: str, is_failed: bool, is_risky: bool
     ) -> tuple[TrainingApprovalAction, str | None, str | None] | TrainingApprovalOutput:
         if inp.action is None:
-            return _error_output(
-                "Non-interactive mode requires --action.", inp.dataset_report_path
-            )
+            return _error_output("Non-interactive mode requires --action.", inp.dataset_report_path)
 
         action = inp.action
 

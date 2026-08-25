@@ -1,0 +1,147 @@
+# MLOps model deployment workflow — triggered by OrchestratorWorkflow on completion.
+#
+# Prerequisites
+# ─────────────
+# 1. In your Orchestrator config (configs/orchestrator.yaml), add:
+#
+#      github_actions:
+#        owner: myorg
+#        repo: ml-pipeline
+#        workflow_file: mlops-deploy.yml
+#        ref: main
+#
+#    Set GITHUB_ACTIONS_TOKEN (PAT with actions:write) as an environment
+#    variable or in GithubActionsConfig.token.
+#
+# 2. Add these repository secrets (Settings → Secrets → Actions):
+#    AZURE_CLIENT_ID        Service principal app ID
+#    AZURE_TENANT_ID        Azure tenant ID
+#    AZURE_CLIENT_SECRET    Service principal secret
+#    AZURE_SUBSCRIPTION_ID  Azure subscription ID (needed for az login --service-principal)
+#
+# 3. Copy configs/azure_ml.example.yaml → configs/azure_ml.yaml, fill in your
+#    workspace details, and commit it (it has no secrets, only resource names).
+#
+# What it does
+# ────────────
+# Runs `agentic-mlops deploy-model` for the registered model that the
+# Orchestrator pipeline just promoted.  Defaults to staging; set the
+# `target` input to "production" together with a pre-existing approval JSON.
+#
+# Triggered inputs
+# ────────────────
+# mlops_workflow_id   Orchestrator run ID (e.g. "wf_001").
+# model_name          Registered model name.
+# model_version       Registered version number (as string).
+# registry_backend    "local" | "mlflow" | "azure_ml".
+# target              Deployment target: "staging" (default) or "production".
+
+name: MLOps Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      mlops_workflow_id:
+        description: "Orchestrator workflow run ID"
+        required: true
+      model_name:
+        description: "Registered model name"
+        required: false
+        default: "yolo-model"
+      model_version:
+        description: "Registered model version (empty = latest)"
+        required: false
+        default: ""
+      registry_backend:
+        description: "Model registry backend (local | azure_ml)"
+        required: false
+        default: "local"
+      target:
+        description: "Deployment target"
+        required: false
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.model_name }} → ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}   # requires env protection rules for production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install agentic-mlops with Azure extras
+        run: pip install -e ".[azure]" --quiet
+
+      # Service-principal login — supports both azure/login action and az CLI.
+      - name: Azure login (service principal)
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+            }
+
+      # ── Local registry deployment ────────────────────────────────────────────
+      - name: Deploy from local registry (staging)
+        if: inputs.registry_backend == 'local' && inputs.target == 'staging'
+        run: |
+          agentic-mlops deploy-model \
+            outputs/model_registry/${{ inputs.model_name }}/versions/${{ inputs.model_version || '1' }}/model/best.pt \
+            --model-name "${{ inputs.model_name }}" \
+            --target staging \
+            --export-format onnx
+
+      # ── Azure ML deployment ──────────────────────────────────────────────────
+      - name: Deploy to Azure ML Managed Online Endpoint (staging)
+        if: inputs.registry_backend == 'azure_ml' && inputs.target == 'staging'
+        run: |
+          agentic-mlops deploy-model \
+            --model-name "${{ inputs.model_name }}" \
+            --backend azure_ml \
+            --azure-config configs/azure_ml.yaml \
+            --azure-model-name "${{ inputs.model_name }}" \
+            ${{ inputs.model_version != '' && format('--azure-model-version {0}', inputs.model_version) || '' }}
+
+      - name: Deploy to Azure ML Managed Online Endpoint (production)
+        if: inputs.registry_backend == 'azure_ml' && inputs.target == 'production'
+        env:
+          ROLLBACK_PLAN: "Revert traffic to previous deployment via Azure portal"
+        run: |
+          # Production gate: requires a pre-existing approval JSON in the run dir.
+          # The Orchestrator writes this to runs/<workflow_id>/artifacts/ when
+          # the H6 gate passes.  Adjust the path to match your setup.
+          APPROVAL_PATH="runs/${{ inputs.mlops_workflow_id }}/artifacts/approval_decision.json"
+          agentic-mlops deploy-model \
+            --model-name "${{ inputs.model_name }}" \
+            --backend azure_ml \
+            --azure-config configs/azure_ml.yaml \
+            --azure-model-name "${{ inputs.model_name }}" \
+            ${{ inputs.model_version != '' && format('--azure-model-version {0}', inputs.model_version) || '' }} \
+            --target production \
+            --production-approval "$APPROVAL_PATH" \
+            --rollback-plan "$ROLLBACK_PLAN"
+
+      - name: Upload deployment report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-report-${{ inputs.mlops_workflow_id }}
+          path: |
+            runs/${{ inputs.mlops_workflow_id }}/artifacts/deployment_report.json
+            outputs/deployments/**/*.json
+          if-no-files-found: ignore

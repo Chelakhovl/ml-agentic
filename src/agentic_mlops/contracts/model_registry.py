@@ -83,8 +83,7 @@ class ModelRegistrationInput(BaseModel):
     def validate_model_name(cls, v: str) -> str:
         if not _MODEL_NAME_RE.match(v):
             raise ValueError(
-                f"model_name '{v}' is invalid. "
-                "Must match ^[a-zA-Z0-9][a-zA-Z0-9_-]{{0,63}}$"
+                f"model_name '{v}' is invalid. " "Must match ^[a-zA-Z0-9][a-zA-Z0-9_-]{{0,63}}$"
             )
         return v
 

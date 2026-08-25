@@ -73,9 +73,7 @@ def _rec(
 
 def test_predictions_log_not_found_fails(tmp_path: Path) -> None:
     result = ModelMonitor().run(
-        MonitoringInput(
-            endpoint_name="ep", predictions_log_path=str(tmp_path / "nope.jsonl")
-        ),
+        MonitoringInput(endpoint_name="ep", predictions_log_path=str(tmp_path / "nope.jsonl")),
         tmp_path / "out",
     )
     assert result.success is False
@@ -111,8 +109,7 @@ def test_empty_log_file_fails(tmp_path: Path) -> None:
 def test_malformed_json_line_skipped_with_warning(tmp_path: Path) -> None:
     log = tmp_path / "predictions.jsonl"
     log.write_text(
-        '{not valid json\n'
-        + json.dumps(_rec("a", "2026-07-10T12:00:00Z", [0.9])) + "\n",
+        "{not valid json\n" + json.dumps(_rec("a", "2026-07-10T12:00:00Z", [0.9])) + "\n",
         encoding="utf-8",
     )
     result = ModelMonitor().run(
@@ -133,9 +130,7 @@ def test_window_filtering_excludes_old_records(tmp_path: Path) -> None:
     ]
     log = _write_log(tmp_path, records)
     result = ModelMonitor().run(
-        MonitoringInput(
-            endpoint_name="ep", predictions_log_path=str(log), monitoring_window="24h"
-        ),
+        MonitoringInput(endpoint_name="ep", predictions_log_path=str(log), monitoring_window="24h"),
         tmp_path / "out",
     )
     assert result.success is True
@@ -182,9 +177,7 @@ def test_low_confidence_ratio_trigger_fires(tmp_path: Path) -> None:
 
 
 def test_p95_latency_trigger_fires(tmp_path: Path) -> None:
-    records = [
-        _rec(f"i{i}", "2026-07-10T12:00:00Z", [0.9], latency_ms=300.0) for i in range(10)
-    ]
+    records = [_rec(f"i{i}", "2026-07-10T12:00:00Z", [0.9], latency_ms=300.0) for i in range(10)]
     log = _write_log(tmp_path, records)
     result = ModelMonitor().run(
         MonitoringInput(endpoint_name="ep", predictions_log_path=str(log)), tmp_path / "out"
@@ -194,9 +187,7 @@ def test_p95_latency_trigger_fires(tmp_path: Path) -> None:
 
 
 def test_error_rate_trigger_fires(tmp_path: Path) -> None:
-    records = [
-        _rec(f"i{i}", "2026-07-10T12:00:00Z", [0.9], error=(i == 0)) for i in range(10)
-    ]
+    records = [_rec(f"i{i}", "2026-07-10T12:00:00Z", [0.9], error=(i == 0)) for i in range(10)]
     log = _write_log(tmp_path, records)
     result = ModelMonitor().run(
         MonitoringInput(endpoint_name="ep", predictions_log_path=str(log)), tmp_path / "out"
@@ -362,9 +353,7 @@ def test_agent_logs_to_mlflow_only_on_success(tmp_path: Path) -> None:
         artifacts_dir=tmp_path / "artifacts2", mlflow_client=client2, mlflow_run_id=run_id2
     )
     agent2.run(
-        MonitoringInput(
-            endpoint_name="ep", predictions_log_path=str(tmp_path / "nope.jsonl")
-        )
+        MonitoringInput(endpoint_name="ep", predictions_log_path=str(tmp_path / "nope.jsonl"))
     )  # fails
     assert client2.runs[run_id2]["tags"] == {}
 
@@ -384,8 +373,10 @@ def test_cli_monitor_succeeds(tmp_path: Path) -> None:
         [
             "monitor",
             str(log),
-            "--endpoint-name", "ep",
-            "--output-dir", str(tmp_path / "out"),
+            "--endpoint-name",
+            "ep",
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -402,8 +393,10 @@ def test_cli_monitor_exits_1_on_missing_log(tmp_path: Path) -> None:
         [
             "monitor",
             str(tmp_path / "nope.jsonl"),
-            "--endpoint-name", "ep",
-            "--output-dir", str(tmp_path / "out"),
+            "--endpoint-name",
+            "ep",
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
     )
     assert result.exit_code == 1
@@ -421,9 +414,12 @@ def test_cli_monitor_exits_1_on_invalid_window(tmp_path: Path) -> None:
         [
             "monitor",
             str(log),
-            "--endpoint-name", "ep",
-            "--monitoring-window", "bogus",
-            "--output-dir", str(tmp_path / "out"),
+            "--endpoint-name",
+            "ep",
+            "--monitoring-window",
+            "bogus",
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
     )
     assert result.exit_code == 1

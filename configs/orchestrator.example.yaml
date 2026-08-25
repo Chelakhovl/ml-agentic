@@ -49,6 +49,12 @@ training_config_path: configs/training.yaml
 # evaluation_runner: local-yolo
 # promotion_policy_path: configs/promotion_policy.yaml
 
+# ── model_decision (optional) ────────────────────────────────────────────
+# auto_baseline: false   # When true, auto-resolves the best registered model
+#                        # from registry_dir as a comparison baseline. Takes
+#                        # effect after evaluation. Ignored when baseline_report_path is set.
+# baseline_report_path: ./baseline_eval/evaluation_report.json  # explicit override
+
 # ── approval ─────────────────────────────────────────────────────────────
 interactive_approval: true
 # approval_action: approve_model   # required when interactive_approval: false
@@ -61,7 +67,7 @@ registry_dir: outputs/model_registry
 
 # ── deployment (optional) ───────────────────────────────────────────────────
 # deployment_target: staging     # staging | production
-# deployment_backend: local      # local | azure_ml
+# deployment_backend: local      # local | azure_ml | docker | aks
 # export_format: onnx            # onnx | pt (backend=local only)
 # deployment_dir: outputs/deployments
 # production_approval_path: ./runs/<workflow_id>/artifacts/approval/approval_decision.json
@@ -71,15 +77,26 @@ registry_dir: outputs/model_registry
 # `steps` — otherwise they're auto-chained from its output.
 # azure_model_name: yolo-model
 # azure_model_version: 3
+# For deployment_backend=docker (requires Docker daemon):
+# docker_config:
+#   registry: myregistry.azurecr.io   # leave empty for local images
+#   image_name: yolo-inference
+#   port: 8080
+# For deployment_backend=aks (requires kubectl + kubeconfig):
+# aks_config:
+#   namespace: ml-serving
+#   replicas: 2
+#   service_type: LoadBalancer
+#   kubeconfig_path: ~/.kube/config    # omit to use current context
 
 # azure_config_path: configs/azure_ml.yaml   # required for any azure-ml/azure_ml choice above
 
 # ── notifications (optional) ────────────────────────────────────────────────
-# Send Teams/Slack webhook messages on key pipeline events.
-# Webhook URLs contain secrets — keep them in a separate config file and do
-# NOT commit them.  notify_on controls which events fire a POST; the defaults
-# shown below are a sensible starting point.
+# Send Teams/Slack webhook and/or SMTP email messages on key pipeline events.
+# Secrets (webhook URLs, SMTP password) belong in a separate config file or
+# environment variables — do NOT commit them.
 # notifications:
+#   # ── Teams / Slack webhooks ─────────────────────────────────────────────
 #   teams_webhook_url: https://outlook.office.com/webhook/YOUR-WEBHOOK-URL
 #   slack_webhook_url: https://hooks.slack.com/services/YOUR/WEBHOOK/URL
 #   notify_on:
@@ -89,3 +106,38 @@ registry_dir: outputs/model_registry
 #     - workflow_blocked
 #     - workflow_pending_approval
 #   # Add step_started / step_completed for verbose per-step notifications.
+#   # Interactive approval: set callback_base_url to enable action buttons.
+#   # callback_base_url: https://mlops.example.com
+#   # slack_signing_secret: ""   # from Slack app Basic Information page
+#   # teams_signing_secret: ""   # base64 Teams connector security token
+#
+#   # ── SMTP email ─────────────────────────────────────────────────────────
+#   # Stdlib-only (smtplib / email.mime) — no extra packages required.
+#   # Both smtp_host and at least one email_to are required to enable email.
+#   # smtp_host: smtp.example.com
+#   # smtp_port: 0           # 0 = auto: 587 (STARTTLS), 465 (SSL), 25 (plain)
+#   # smtp_tls: true         # STARTTLS — typical for port 587
+#   # smtp_ssl: false        # SMTPS — for port 465; takes precedence over smtp_tls
+#   # smtp_user: user@example.com
+#   # smtp_password: ""      # use env var or a secrets file, never commit
+#   # email_from: mlops-noreply@example.com
+#   # email_subject_prefix: "[MLOps]"
+#   # email_to:
+#   #   - ops-team@example.com
+#   #   - ml-alerts@example.com
+
+# ── CI/CD trigger (optional) ────────────────────────────────────────────────
+# Dispatch a GitHub Actions workflow when the pipeline completes successfully.
+# Requires a PAT with actions:write scope stored in GITHUB_ACTIONS_TOKEN env
+# var (or set in GithubActionsConfig.token — but don't commit the token).
+# See .github/workflows/mlops-deploy.yml for the target workflow template.
+# github_actions:
+#   owner: myorg
+#   repo: ml-pipeline
+#   workflow_file: mlops-deploy.yml
+#   ref: main
+#   trigger_on:
+#     - workflow_completed
+#   # Extra key-value inputs forwarded verbatim to the dispatched workflow:
+#   # extra_inputs:
+#   #   environment: production

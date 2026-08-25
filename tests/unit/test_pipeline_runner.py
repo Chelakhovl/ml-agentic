@@ -179,10 +179,12 @@ class TestAzureMLPipelineRunnerBehavior:
         class _NoWeightsFactory(FakeAzureMLClientFactory):
             def create(self, cfg):
                 client = super().create(cfg)
+
                 # Override download to create eval output but NOT best.pt
                 def _download_no_best(name, output_name="", download_path="", all_outputs=False):
                     if all_outputs:
                         from pathlib import Path as _P  # noqa: PLC0415
+
                         eval_dir = _P(download_path) / "eval_step" / "eval_output"
                         eval_dir.mkdir(parents=True, exist_ok=True)
                         (eval_dir / "metrics.json").write_text(
@@ -219,10 +221,9 @@ class TestAzureMLPipelineRunnerBehavior:
             def create(self, cfg):
                 client = super().create(cfg)
 
-                def _download_no_metrics(
-                    name, output_name="", download_path="", all_outputs=False
-                ):
+                def _download_no_metrics(name, output_name="", download_path="", all_outputs=False):
                     from pathlib import Path as _P  # noqa: PLC0415
+
                     if all_outputs:
                         train_dir = _P(download_path) / "train_step" / "model_output"
                         train_dir.mkdir(parents=True, exist_ok=True)
@@ -379,9 +380,7 @@ class TestAzureMLPipelineRunnerJobConstruction:
         """Return a dict of mock SDK objects to patch into azure.ai.ml."""
         fake_component = MagicMock(name="command_component")
         fake_component.return_value = MagicMock()
-        fake_component.return_value.outputs = {
-            "model_output": MagicMock(name="model_output_ref")
-        }
+        fake_component.return_value.outputs = {"model_output": MagicMock(name="model_output_ref")}
 
         fake_pipeline_job = MagicMock(name="pipeline_job")
         fake_dsl_pipeline_decorator = MagicMock(name="dsl_pipeline_decorator")
@@ -428,10 +427,12 @@ class TestAzureMLPipelineRunnerJobConstruction:
 
         captured_commands: list[str] = []
 
-        real_command_mock = MagicMock(side_effect=lambda **kw: (
-            captured_commands.append(kw.get("command", "")),
-            MagicMock(outputs={"model_output": MagicMock(), "eval_output": MagicMock()})
-        )[1])
+        real_command_mock = MagicMock(
+            side_effect=lambda **kw: (
+                captured_commands.append(kw.get("command", "")),
+                MagicMock(outputs={"model_output": MagicMock(), "eval_output": MagicMock()}),
+            )[1]
+        )
 
         fake_dsl = MagicMock()
         fake_pipeline_func = MagicMock()
@@ -446,18 +447,23 @@ class TestAzureMLPipelineRunnerJobConstruction:
         azure_ml_mock.Output = MagicMock()
         azure_ml_mock.dsl = fake_dsl
 
-        with patch.dict(sys.modules, {"azure.ai.ml": azure_ml_mock,
-                                       "azure.ai.ml.constants": MagicMock(),
-                                       "azure.ai.ml.entities": MagicMock()}):
+        with patch.dict(
+            sys.modules,
+            {
+                "azure.ai.ml": azure_ml_mock,
+                "azure.ai.ml.constants": MagicMock(),
+                "azure.ai.ml.entities": MagicMock(),
+            },
+        ):
             try:
                 runner._build_pipeline(train_inp, cfg, None)
             except Exception:
                 pass  # DSL decorator wiring may fail in mocked env; we only need captured_commands
 
         eval_cmds = [c for c in captured_commands if "eval_yolo.py" in c]
-        assert any("/best.pt" in c for c in eval_cmds), (
-            f"Expected /best.pt in eval command, got: {eval_cmds}"
-        )
+        assert any(
+            "/best.pt" in c for c in eval_cmds
+        ), f"Expected /best.pt in eval command, got: {eval_cmds}"
 
 
 # ── TestAzureMLPipelineConfig ──────────────────────────────────────────────────
@@ -643,9 +649,7 @@ class TestOrchestratorPipelineIntegration:
         )
         return str(ds), str(data_yaml)
 
-    def test_step_evaluation_uses_pipeline_eval_path_when_present(
-        self, tmp_path: Path
-    ) -> None:
+    def test_step_evaluation_uses_pipeline_eval_path_when_present(self, tmp_path: Path) -> None:
         from agentic_mlops.contracts.orchestrator import OrchestratorInput  # noqa: PLC0415
         from agentic_mlops.workflows.orchestrator import OrchestratorWorkflow  # noqa: PLC0415
 
@@ -691,9 +695,7 @@ class TestOrchestratorPipelineIntegration:
         assert outcome.status_label == "COMPLETED"
         assert outcome.key_outputs["output_json_path"] == str(eval_out_path)
 
-    def test_step_evaluation_missing_pipeline_eval_file_fails(
-        self, tmp_path: Path
-    ) -> None:
+    def test_step_evaluation_missing_pipeline_eval_file_fails(self, tmp_path: Path) -> None:
         from agentic_mlops.contracts.orchestrator import OrchestratorInput  # noqa: PLC0415
         from agentic_mlops.workflows.orchestrator import OrchestratorWorkflow  # noqa: PLC0415
 

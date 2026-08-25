@@ -19,6 +19,8 @@ def create_app(
     datasets_dir: str = "outputs/dataset_registry",
     dashboard_user: str = "admin",
     dashboard_password: str = "",
+    slack_signing_secret: str = "",
+    teams_signing_secret: str = "",
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -68,6 +70,8 @@ def create_app(
     app.state.registry_dir = Path(registry_dir).resolve()
     app.state.datasets_dir = Path(datasets_dir).resolve()
     app.state.templates = templates
+    app.state.slack_signing_secret = slack_signing_secret or ""
+    app.state.teams_signing_secret = teams_signing_secret or ""
 
     app.include_router(router)
 

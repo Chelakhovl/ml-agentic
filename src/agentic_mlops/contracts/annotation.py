@@ -10,9 +10,9 @@ from .common import ToolResult
 
 
 class ConfidenceBucket(StrEnum):
-    HIGH = "high"      # candidate label — still sample-audited by a human, never auto-final
+    HIGH = "high"  # candidate label — still sample-audited by a human, never auto-final
     MEDIUM = "medium"  # routed to human review
-    LOW = "low"        # hard sample / expert review
+    LOW = "low"  # hard sample / expert review
 
 
 class ConfidenceThresholds(BaseModel):

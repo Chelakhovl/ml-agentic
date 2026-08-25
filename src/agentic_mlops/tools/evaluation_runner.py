@@ -102,9 +102,7 @@ def _config_to_policy(cfg: EvaluationConfig) -> PromotionPolicy:
         recall_min=m.min_recall,
     )
     critical_classes = list(cfg.critical_classes.keys())
-    per_class_recall_min = {
-        cls: cc.min_recall for cls, cc in cfg.critical_classes.items()
-    }
+    per_class_recall_min = {cls: cc.min_recall for cls, cc in cfg.critical_classes.items()}
     return PromotionPolicy(
         thresholds=thresholds,
         critical_classes=critical_classes,
@@ -148,9 +146,7 @@ def _extract_metrics(results, class_names: list[str]) -> EvaluationMetrics:
         names = getattr(results, "names", {}) or {}
         for i, cls_idx in enumerate(ap_class_index):
             idx = int(cls_idx)
-            cls_name = names.get(idx) or (
-                class_names[idx] if idx < len(class_names) else str(idx)
-            )
+            cls_name = names.get(idx) or (class_names[idx] if idx < len(class_names) else str(idx))
             per_class[cls_name] = PerClassMetrics(
                 precision=float(p_list[i]) if p_list is not None and i < len(p_list) else 0.0,
                 recall=float(r_list[i]) if r_list is not None and i < len(r_list) else 0.0,
@@ -382,6 +378,7 @@ class AzureMLEvaluationRunner:
             from agentic_mlops.integrations.azure_ml_client import (  # noqa: PLC0415
                 DefaultAzureMLClientFactory,
             )
+
             client_factory = DefaultAzureMLClientFactory()
         self._factory = client_factory
 

@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}{{ dataset_name }} — Diff v{{ v1 }} vs v{{ v2 }} — MLOps{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+
+{# ── Breadcrumb ─────────────────────────────────────────────────────────────── #}
+<div style="font-size:12px; color:var(--muted); margin-bottom:16px">
+  <a href="/datasets" class="table-link">Datasets</a>
+  &nbsp;/&nbsp; <a href="/datasets/{{ dataset_name }}" class="table-link">{{ dataset_name }}</a>
+  &nbsp;/&nbsp; <a href="/datasets/{{ dataset_name }}/quality" class="table-link">Quality</a>
+  &nbsp;/&nbsp; diff v{{ v1 }} vs v{{ v2 }}
+</div>
+
+{# ── Version selector ───────────────────────────────────────────────────────── #}
+<div class="card" style="margin-bottom:16px; display:flex; align-items:center; gap:16px; flex-wrap:wrap">
+  <span style="font-size:13px; font-weight:600; color:var(--muted)">Compare</span>
+  <form method="get" action="" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+    <select name="v1" style="padding:5px 10px; border:1px solid var(--border); border-radius:var(--radius);
+                              background:var(--bg); color:var(--text); font-size:13px">
+      {% for vn in version_nums %}
+      <option value="{{ vn }}" {% if vn == v1 %}selected{% endif %}>v{{ vn }}</option>
+      {% endfor %}
+    </select>
+    <span style="color:var(--muted)">vs</span>
+    <select name="v2" style="padding:5px 10px; border:1px solid var(--border); border-radius:var(--radius);
+                              background:var(--bg); color:var(--text); font-size:13px">
+      {% for vn in version_nums %}
+      <option value="{{ vn }}" {% if vn == v2 %}selected{% endif %}>v{{ vn }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" style="padding:5px 14px; background:var(--accent); color:#fff; border:none;
+                                  border-radius:var(--radius); font-size:13px; cursor:pointer">
+      Compare
+    </button>
+  </form>
+  {% if v1 != v2 %}
+  <span style="margin-left:auto; font-size:12px; color:var(--muted)">
+    <a href="/datasets/{{ dataset_name }}/quality" class="table-link">← Quality view</a>
+  </span>
+  {% endif %}
+</div>
+
+{% if v1 == v2 %}
+<div class="card" style="text-align:center; padding:32px; color:var(--muted)">
+  Select two different versions to compare.
+</div>
+{% else %}
+
+{# ── Classes diff ───────────────────────────────────────────────────────────── #}
+{% set added = diff.classes_added %}
+{% set removed = diff.classes_removed %}
+{% set common = diff.classes_common %}
+{% if added or removed %}
+<div class="card" style="margin-bottom:16px; border-left:3px solid var(--orange)">
+  <div class="card-title">Class Changes</div>
+  <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:4px">
+    {% for c in added %}
+    <span class="badge badge-completed">+ {{ c }}</span>
+    {% endfor %}
+    {% for c in removed %}
+    <span class="badge badge-failed">− {{ c }}</span>
+    {% endfor %}
+    {% for c in common %}
+    <span class="badge" style="background:var(--sidebar-bg); color:var(--muted)">{{ c }}</span>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{# ── Side-by-side metrics ───────────────────────────────────────────────────── #}
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px">
+
+{% macro ver_card(ver, fields, side) %}
+<div class="card">
+  <div class="card-title" style="font-size:16px; font-weight:700">
+    Version {{ ver }}
+  </div>
+  <table style="width:100%; border-collapse:collapse; font-size:13px; margin-top:8px">
+    {% for key, label in [
+        ("num_images", "Images"),
+        ("num_labels", "Labels"),
+        ("blocking_issues_count", "Blocking Issues"),
+        ("label_issues_count", "Label Issues"),
+        ("validation_status", "Validation"),
+        ("label_qa_status", "Label QA"),
+        ("approved_by", "Approved By"),
+        ("registered_at", "Registered"),
+        ("parent_version", "Parent Version"),
+    ] %}
+    {% set f = fields[key] %}
+    {% set val = f.a if side == "left" else f.b %}
+    {% set highlight = f.changed %}
+    <tr style="border-bottom:1px solid var(--border){% if highlight %}; background:rgba(255,184,0,.06){% endif %}">
+      <td style="padding:7px 10px; color:var(--muted); width:48%">{{ label }}</td>
+      <td style="padding:7px 10px; font-weight:{% if highlight %}600{% else %}400{% endif %};
+                 {% if key in ('blocking_issues_count', 'label_issues_count') and val and val > 0 %}color:var(--orange){% endif %}
+                 {% if key == 'validation_status' and val == 'failed' %}color:var(--red){% elif key == 'validation_status' and val == 'passed' %}color:var(--green){% endif %}">
+        {% if val is not none %}{{ val }}{% else %}&mdash;{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endmacro %}
+
+{{ ver_card(v1, diff.fields, "left") }}
+{{ ver_card(v2, diff.fields, "right") }}
+</div>
+
+{# ── Delta summary ──────────────────────────────────────────────────────────── #}
+{% set ni = diff.fields.num_images %}
+{% set nl = diff.fields.num_labels %}
+{% if ni.delta is not none or nl.delta is not none %}
+<div class="card" style="margin-bottom:16px">
+  <div class="card-title">Delta (v{{ v2 }} − v{{ v1 }})</div>
+  <div style="display:flex; gap:32px; flex-wrap:wrap; margin-top:8px">
+    {% if ni.delta is not none %}
+    {% set sign = "+" if ni.delta > 0 else "" %}
+    <div>
+      <div style="font-size:11px; text-transform:uppercase; color:var(--muted); letter-spacing:.4px; margin-bottom:2px">Images</div>
+      <div style="font-size:24px; font-weight:700;
+                  color:{% if ni.delta > 0 %}var(--green){% elif ni.delta < 0 %}var(--red){% else %}var(--muted){% endif %}">
+        {{ sign }}{{ ni.delta }}
+      </div>
+    </div>
+    {% endif %}
+    {% if nl.delta is not none %}
+    {% set sign2 = "+" if nl.delta > 0 else "" %}
+    <div>
+      <div style="font-size:11px; text-transform:uppercase; color:var(--muted); letter-spacing:.4px; margin-bottom:2px">Labels</div>
+      <div style="font-size:24px; font-weight:700;
+                  color:{% if nl.delta > 0 %}var(--green){% elif nl.delta < 0 %}var(--red){% else %}var(--muted){% endif %}">
+        {{ sign2 }}{{ nl.delta }}
+      </div>
+    </div>
+    {% endif %}
+    {% set bi = diff.fields.blocking_issues_count %}
+    {% if bi.delta is not none and bi.delta != 0 %}
+    {% set sign3 = "+" if bi.delta > 0 else "" %}
+    <div>
+      <div style="font-size:11px; text-transform:uppercase; color:var(--muted); letter-spacing:.4px; margin-bottom:2px">Blocking Issues</div>
+      <div style="font-size:24px; font-weight:700; color:{% if bi.delta > 0 %}var(--red){% else %}var(--green){% endif %}">
+        {{ sign3 }}{{ bi.delta }}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# ── Class distribution chart ───────────────────────────────────────────────── #}
+{% set dist_a = diff.class_dist_a %}
+{% set dist_b = diff.class_dist_b %}
+{% if dist_a or dist_b %}
+<div class="card" style="margin-bottom:16px">
+  <div class="card-title">Class Distribution</div>
+  <div style="position:relative; height:220px">
+    <canvas id="distChart"></canvas>
+  </div>
+  <script>
+  (function(){
+    const distA = {{ dist_a | tojson }};
+    const distB = {{ dist_b | tojson }};
+    const allLabels = [...new Set([...Object.keys(distA), ...Object.keys(distB)])].sort();
+    const totalA = Object.values(distA).reduce((s, v) => s + v, 0) || 1;
+    const totalB = Object.values(distB).reduce((s, v) => s + v, 0) || 1;
+    new Chart(document.getElementById('distChart'), {
+      type: 'bar',
+      data: {
+        labels: allLabels,
+        datasets: [
+          {
+            label: 'v{{ v1 }}',
+            data: allLabels.map(k => +((distA[k] || 0) / totalA * 100).toFixed(2)),
+            backgroundColor: 'rgba(99,132,255,.70)',
+            borderRadius: 3,
+          },
+          {
+            label: 'v{{ v2 }}',
+            data: allLabels.map(k => +((distB[k] || 0) / totalB * 100).toFixed(2)),
+            backgroundColor: 'rgba(255,159,64,.70)',
+            borderRadius: 3,
+          },
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: 'top' } },
+        scales: {
+          y: { title: { display: true, text: '% of labels', color: 'var(--muted)', font: { size: 11 } }, beginAtZero: true }
+        }
+      }
+    });
+  })();
+  </script>
+</div>
+{% endif %}
+
+{# ── Source batches ─────────────────────────────────────────────────────────── #}
+{% if diff.v1_source_batches or diff.v2_source_batches %}
+<div class="card">
+  <div class="card-title">Source Batches</div>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:8px; font-size:13px">
+    <div>
+      <div style="font-weight:600; margin-bottom:4px; color:var(--muted)">v{{ v1 }}</div>
+      {% for b in diff.v1_source_batches %}<div>{{ b }}</div>{% else %}<div class="muted">—</div>{% endfor %}
+    </div>
+    <div>
+      <div style="font-weight:600; margin-bottom:4px; color:var(--muted)">v{{ v2 }}</div>
+      {% for b in diff.v2_source_batches %}<div>{{ b }}</div>{% else %}<div class="muted">—</div>{% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% endif %}{# end v1 != v2 #}
+{% endblock %}

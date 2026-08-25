@@ -132,8 +132,7 @@ class AzureBlobArtifactStore(ArtifactStore):
             credential = DefaultAzureCredential()
         except ImportError as exc:
             raise RuntimeError(
-                "azure-identity is not installed. "
-                "Run: pip install 'agentic-mlops-yolo[azure]'"
+                "azure-identity is not installed. " "Run: pip install 'agentic-mlops-yolo[azure]'"
             ) from exc
 
         self._service = BlobServiceClient(account_url=account_url, credential=credential)
@@ -145,9 +144,7 @@ class AzureBlobArtifactStore(ArtifactStore):
     def upload_file(self, local_path: Path, blob_key: str) -> str:
         full_key = f"{self._prefix}/{blob_key}" if self._prefix else blob_key
         try:
-            blob_client = self._service.get_blob_client(
-                container=self._container, blob=full_key
-            )
+            blob_client = self._service.get_blob_client(container=self._container, blob=full_key)
             with open(local_path, "rb") as fh:
                 blob_client.upload_blob(fh, overwrite=True)
             uri = f"{self._account_url}/{self._container}/{full_key}"
@@ -178,17 +175,13 @@ class AzureBlobArtifactStore(ArtifactStore):
     def download_file(self, blob_key: str, local_path: Path) -> None:
         full_key = f"{self._prefix}/{blob_key}" if self._prefix else blob_key
         local_path.parent.mkdir(parents=True, exist_ok=True)
-        blob_client = self._service.get_blob_client(
-            container=self._container, blob=full_key
-        )
+        blob_client = self._service.get_blob_client(container=self._container, blob=full_key)
         with open(local_path, "wb") as fh:
             fh.write(blob_client.download_blob().readall())
 
     def exists(self, blob_key: str) -> bool:
         full_key = f"{self._prefix}/{blob_key}" if self._prefix else blob_key
-        blob_client = self._service.get_blob_client(
-            container=self._container, blob=full_key
-        )
+        blob_client = self._service.get_blob_client(container=self._container, blob=full_key)
         return blob_client.exists()
 
 

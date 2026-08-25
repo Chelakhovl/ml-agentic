@@ -67,7 +67,6 @@ class ReportWriter:
         logger.info("Reports written", extra={"json": str(json_path), "md": str(md_path)})
         return json_path, md_path
 
-
     def write_training_report(
         self,
         output: TrainingOutput,
@@ -79,7 +78,6 @@ class ReportWriter:
         md_path.write_text(_training_report_md(output), encoding="utf-8")
         logger.info("Training report written", extra={"md": str(md_path)})
         return md_path
-
 
     def write_evaluation_report(
         self,
@@ -144,7 +142,6 @@ class ReportWriter:
             extra={"json": str(json_path), "md": str(md_path)},
         )
         return json_path, md_path
-
 
     def write_training_approval_decision(
         self,
@@ -266,9 +263,7 @@ class ReportWriter:
         json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         md_path.write_text(_deployment_report_md(payload), encoding="utf-8")
 
-        logger.info(
-            "Deployment report written", extra={"json": str(json_path), "md": str(md_path)}
-        )
+        logger.info("Deployment report written", extra={"json": str(json_path), "md": str(md_path)})
         return json_path, md_path
 
     def write_model_decision_report(
@@ -395,9 +390,7 @@ class ReportWriter:
         json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         md_path.write_text(_label_qa_report_md(payload), encoding="utf-8")
 
-        logger.info(
-            "Label QA report written", extra={"json": str(json_path), "md": str(md_path)}
-        )
+        logger.info("Label QA report written", extra={"json": str(json_path), "md": str(md_path)})
         return json_path, md_path
 
     def write_monitoring_report(
@@ -435,9 +428,7 @@ class ReportWriter:
         json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         md_path.write_text(_monitoring_report_md(payload), encoding="utf-8")
 
-        logger.info(
-            "Monitoring report written", extra={"json": str(json_path), "md": str(md_path)}
-        )
+        logger.info("Monitoring report written", extra={"json": str(json_path), "md": str(md_path)})
         return json_path, md_path
 
     def write_orchestrator_report(
@@ -579,9 +570,7 @@ def _annotation_report_md(report: dict[str, Any]) -> str:
         "",
     ]
 
-    review_records = [
-        r for r in report["records"] if r["bucket"] in ("medium", "low")
-    ]
+    review_records = [r for r in report["records"] if r["bucket"] in ("medium", "low")]
     if review_records:
         lines += [
             "## Review Queue (medium/low confidence)",
@@ -652,7 +641,8 @@ def _orchestrator_report_md(report: dict[str, Any]) -> str:
 
     if report["pending_approval_id"]:
         lines += [
-            "## Pending Approval", "",
+            "## Pending Approval",
+            "",
             "Awaiting a human decision — `pending_approval_id`: "
             f"`{report['pending_approval_id']}`.",
             "",
@@ -779,10 +769,7 @@ def _model_decision_report_md(report: dict[str, Any]) -> str:
             "",
             "| Metric | Baseline | Candidate | Δ mAP50 |",
             "|--------|----------|-----------|---------|",
-            (
-                f"| mAP@0.5 | {b['map50']:.4f} | {m['map50']:.4f} | "
-                f"{improvement:+.4f} |"
-            ),
+            (f"| mAP@0.5 | {b['map50']:.4f} | {m['map50']:.4f} | " f"{improvement:+.4f} |"),
             "",
         ]
 
@@ -979,8 +966,12 @@ def _label_qa_report_md(report: dict[str, Any]) -> str:
         lines.append("")
 
     if samples:
-        lines += ["## Suspicious Samples", "", "| Image | Split | Issue | Message |",
-                   "|-------|-------|-------|---------|"]
+        lines += [
+            "## Suspicious Samples",
+            "",
+            "| Image | Split | Issue | Message |",
+            "|-------|-------|-------|---------|",
+        ]
         for s in samples[:200]:  # keep the report readable for large datasets
             lines.append(
                 f"| {s['image'] or 'N/A'} | {s['split'] or 'N/A'} "

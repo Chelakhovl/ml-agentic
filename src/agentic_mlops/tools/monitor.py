@@ -117,9 +117,7 @@ class ModelMonitor:
         assert log_client is not None
         records, warnings = log_client.fetch_records()
         if not records:
-            source_desc = (
-                inp.app_insights_workspace_id or inp.predictions_log_path or inp.source
-            )
+            source_desc = inp.app_insights_workspace_id or inp.predictions_log_path or inp.source
             return _failed(f"No prediction records found in {source_desc}")
 
         filtered, window_start, window_end = _filter_window(records, window_seconds)
@@ -140,9 +138,7 @@ class ModelMonitor:
         error_rate = error_count / total
 
         latencies = [
-            float(r["latency_ms"])
-            for r in filtered
-            if isinstance(r.get("latency_ms"), int | float)
+            float(r["latency_ms"]) for r in filtered if isinstance(r.get("latency_ms"), int | float)
         ]
         if not latencies:
             warnings.append("No latency_ms values found in the windowed log.")
@@ -251,9 +247,7 @@ class ModelMonitor:
             )
             fired_actions.append(RecommendedAction.NOTIFY_OPS)
         if error_rate >= th.error_rate:
-            triggered_alerts.append(
-                f"error_rate {error_rate:.2f} >= threshold {th.error_rate:.2f}"
-            )
+            triggered_alerts.append(f"error_rate {error_rate:.2f} >= threshold {th.error_rate:.2f}")
             fired_actions.append(RecommendedAction.NOTIFY_OPS)
             requires_human_review = True
         if new_classes_detected:

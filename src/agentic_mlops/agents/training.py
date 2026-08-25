@@ -110,11 +110,14 @@ class TrainingAgent(BaseAgent):
         }
         client.log_params(rid, params)
 
-        client.log_tags(rid, {
-            "workflow_step": "training",
-            "training_runner": runner_name,
-            "training_status": str(output.job_status),
-        })
+        client.log_tags(
+            rid,
+            {
+                "workflow_step": "training",
+                "training_runner": runner_name,
+                "training_status": str(output.job_status),
+            },
+        )
 
         for artifact_path in output.artifacts:
             client.log_artifact(rid, artifact_path)

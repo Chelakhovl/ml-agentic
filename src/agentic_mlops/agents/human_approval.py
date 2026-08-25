@@ -125,8 +125,7 @@ class HumanApprovalAgent(BaseAgent):
             evaluation_status=eval_status,
             recommendation=recommendation,
             key_metrics={
-                k: float(metrics.get(k, 0.0))
-                for k in ("map50", "map50_95", "precision", "recall")
+                k: float(metrics.get(k, 0.0)) for k in ("map50", "map50_95", "precision", "recall")
             },
             threshold_summary=eval_report.get("passed_checks", [])[:5],
             reasons=reasons,
@@ -144,8 +143,7 @@ class HumanApprovalAgent(BaseAgent):
         # 4. Final safety guard: never approve a failed/blocked evaluation
         if action == ApprovalAction.APPROVE_MODEL and recommendation is None:
             msg = (
-                "Cannot approve a blocked/failed evaluation. "
-                "Choose reject, retrain, or cancel."
+                "Cannot approve a blocked/failed evaluation. " "Choose reject, retrain, or cancel."
             )
             return _error_output(msg, input.evaluation_output_path, approval_req)
 
@@ -168,9 +166,7 @@ class HumanApprovalAgent(BaseAgent):
         )
 
         # 7. Write artifacts
-        json_path, md_path = self._report_writer.write_approval_decision(
-            output, self.artifacts_dir
-        )
+        json_path, md_path = self._report_writer.write_approval_decision(output, self.artifacts_dir)
         output.generated_artifacts = [str(json_path), str(md_path)]
         output.artifacts = list(output.generated_artifacts)
 
@@ -209,11 +205,14 @@ class HumanApprovalAgent(BaseAgent):
         }
         client.log_metrics(rid, metrics)
 
-        client.log_tags(rid, {
-            "workflow_step": "human_approval",
-            "approval_status": str(output.status),
-            "approval_action": str(output.action or "none"),
-        })
+        client.log_tags(
+            rid,
+            {
+                "workflow_step": "human_approval",
+                "approval_status": str(output.status),
+                "approval_action": str(output.action or "none"),
+            },
+        )
 
         for artifact_path in output.artifacts:
             client.log_artifact(rid, artifact_path)
@@ -238,8 +237,7 @@ class HumanApprovalAgent(BaseAgent):
         # Cannot approve a failed evaluation — not even with --force
         if action == ApprovalAction.APPROVE_MODEL and recommendation is None:
             return _error_output(
-                "Cannot approve a blocked/failed evaluation. "
-                "Choose reject, retrain, or cancel.",
+                "Cannot approve a blocked/failed evaluation. " "Choose reject, retrain, or cancel.",
                 inp.evaluation_output_path,
                 approval_req,
             )

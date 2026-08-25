@@ -302,9 +302,7 @@ def test_hash_dataset_is_deterministic(tmp_path: Path) -> None:
 
 def test_fake_registry_records_calls_and_increments_version(tmp_path: Path) -> None:
     client = FakeDatasetVersionRegistry()
-    inp = DatasetVersioningInput(
-        dataset_path="/a", dataset_name="ds", registry_dir=str(tmp_path)
-    )
+    inp = DatasetVersioningInput(dataset_path="/a", dataset_name="ds", registry_dir=str(tmp_path))
     r1 = client.register(inp, ["a"], None, None, tmp_path)
     r2 = client.register(inp, ["a"], None, None, tmp_path)
 
@@ -331,9 +329,7 @@ def test_agent_writes_report_files(tmp_path: Path) -> None:
     assert (artifacts_dir / "dataset_version_report.json").exists()
     assert (artifacts_dir / "dataset_version_report.md").exists()
 
-    data = json.loads(
-        (artifacts_dir / "dataset_version_report.json").read_text(encoding="utf-8")
-    )
+    data = json.loads((artifacts_dir / "dataset_version_report.json").read_text(encoding="utf-8"))
     assert data["status"] == "registered"
     assert result.success is True
 
@@ -396,8 +392,10 @@ def test_cli_version_dataset_succeeds(tmp_path: Path) -> None:
         [
             "version-dataset",
             str(ds),
-            "--dataset-name", "ds",
-            "--registry-dir", str(tmp_path / "registry"),
+            "--dataset-name",
+            "ds",
+            "--registry-dir",
+            str(tmp_path / "registry"),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -414,8 +412,10 @@ def test_cli_version_dataset_exits_1_on_missing_path(tmp_path: Path) -> None:
         [
             "version-dataset",
             str(tmp_path / "nope"),
-            "--dataset-name", "ds",
-            "--registry-dir", str(tmp_path / "registry"),
+            "--dataset-name",
+            "ds",
+            "--registry-dir",
+            str(tmp_path / "registry"),
         ],
     )
     assert result.exit_code == 1
@@ -435,9 +435,12 @@ def test_cli_version_dataset_exits_1_when_validation_failed(tmp_path: Path) -> N
         [
             "version-dataset",
             str(ds),
-            "--dataset-name", "ds",
-            "--registry-dir", str(tmp_path / "registry"),
-            "--validation-report", report,
+            "--dataset-name",
+            "ds",
+            "--registry-dir",
+            str(tmp_path / "registry"),
+            "--validation-report",
+            report,
         ],
     )
     assert result.exit_code == 1

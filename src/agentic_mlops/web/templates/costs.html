@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Costs — MLOps{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Compute Costs</h1>
+  <p>Estimated Azure compute spend across all tracked workflow runs</p>
+</div>
+
+<div class="stat-row">
+  <div class="stat-card blue">
+    <div class="stat-label">Grand Total</div>
+    <div class="stat-value" style="font-size:22px">${{ "%.4f" | format(grand_total) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Tracked Runs</div>
+    <div class="stat-value">{{ reports | length }}</div>
+  </div>
+  {% if top_run %}
+  <div class="stat-card orange">
+    <div class="stat-label">Most Expensive Run</div>
+    <div class="stat-value" style="font-size:18px">${{ "%.4f" | format(top_run.get('total_cost_usd', 0)) }}</div>
+    <div class="muted" style="font-size:11px; margin-top:4px">{{ top_run.get('workflow_id','—') }}</div>
+  </div>
+  {% endif %}
+</div>
+
+{% if reports %}
+<div class="card">
+  <div class="card-title">Cost Per Run</div>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Workflow</th>
+        <th style="text-align:right">Total (USD)</th>
+        <th>Top Step</th>
+        <th>Steps Tracked</th>
+        <th>Generated</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in reports %}
+    {% set entries = r.get('entries', []) %}
+    {% set top_entry = entries | sort(attribute='cost_usd', reverse=True) | first if entries else none %}
+    <tr>
+      <td>
+        <a href="/workflows/{{ r.get('workflow_id','') }}" class="table-link mono">{{ r.get('workflow_id', '—') }}</a>
+      </td>
+      <td class="mono" style="text-align:right; font-weight:600">
+        ${{ "%.4f" | format(r.get('total_cost_usd', 0)) }}
+      </td>
+      <td class="mono" style="font-size:12px">
+        {% if top_entry %}
+          {{ top_entry.step }} (${{ "%.4f" | format(top_entry.cost_usd or 0) }})
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td class="muted">{{ entries | length }}</td>
+      <td class="muted">{{ fmt_dt(r.get('generated_at')) }}</td>
+    </tr>
+    <!-- Per-step breakdown (expandable) -->
+    {% if entries %}
+    <tr id="cost-detail-{{ loop.index }}" style="display:none; background:#fafafa">
+      <td colspan="5" style="padding:0 14px 12px">
+        <table style="font-size:12px; width:100%; margin-top:8px">
+          <thead>
+            <tr>
+              <th>Step</th><th>Runner</th><th>Compute</th>
+              <th style="text-align:right">Duration (min)</th>
+              <th style="text-align:right">Cost (USD)</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for e in entries %}
+          <tr>
+            <td class="mono">{{ e.step }}</td>
+            <td class="muted">{{ e.runner or '—' }}</td>
+            <td class="muted">{{ e.compute_type or '—' }}</td>
+            <td class="mono" style="text-align:right">{{ "%.1f" | format((e.duration_seconds or 0) / 60) }}</td>
+            <td class="mono" style="text-align:right">${{ "%.4f" | format(e.cost_usd or 0) }}</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted" style="font-size:11.5px; margin-top:12px">
+    Click a row to expand per-step breakdown. Costs are estimates based on Azure VM pricing; actual billing may differ.
+  </p>
+</div>
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon">💰</div>
+  <p>No cost reports found.<br>
+  Run a workflow with a <code>CostTracker</code> configured to record costs.</p>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('#wfCostTable tbody tr[data-toggle-row]').forEach(function(row) {
+  row.style.cursor = 'pointer';
+  row.addEventListener('click', function() {
+    const detail = document.getElementById('cost-detail-' + this.dataset.toggleRow);
+    if (detail) detail.style.display = detail.style.display === 'none' ? '' : 'none';
+  });
+});
+// Simpler: attach click to all data rows that have a sibling detail row
+(function() {
+  const rows = document.querySelectorAll('.card table tbody tr');
+  rows.forEach(function(row, i) {
+    const next = rows[i + 1];
+    if (next && next.id && next.id.startsWith('cost-detail-')) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        next.style.display = next.style.display === 'none' ? '' : 'none';
+      });
+    }
+  });
+})();
+</script>
+{% endblock %}

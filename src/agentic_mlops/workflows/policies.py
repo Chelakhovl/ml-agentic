@@ -97,13 +97,9 @@ def evaluate_metrics_against_policy(
         if pcm is None:
             failed.append(f"class '{cls_name}' missing from per-class metrics")
         elif pcm.recall < min_recall:
-            failed.append(
-                f"class '{cls_name}' recall {pcm.recall:.4f} < {min_recall:.4f}"
-            )
+            failed.append(f"class '{cls_name}' recall {pcm.recall:.4f} < {min_recall:.4f}")
         else:
-            passed.append(
-                f"class '{cls_name}' recall {pcm.recall:.4f} >= {min_recall:.4f}"
-            )
+            passed.append(f"class '{cls_name}' recall {pcm.recall:.4f} >= {min_recall:.4f}")
 
     if critical_fail:
         recommendation = EvaluationRecommendation.NEED_LABEL_REVIEW

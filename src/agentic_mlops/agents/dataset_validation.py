@@ -59,9 +59,7 @@ class DatasetValidationAgent(BaseAgent):
         )
         return output
 
-    def _log_to_mlflow(
-        self, inp: DatasetValidationInput, output: DatasetValidationOutput
-    ) -> None:
+    def _log_to_mlflow(self, inp: DatasetValidationInput, output: DatasetValidationOutput) -> None:
         rid = self._mlflow_run_id
         client = self._mlflow
         assert rid is not None and client is not None
@@ -82,10 +80,13 @@ class DatasetValidationAgent(BaseAgent):
         }
         client.log_metrics(rid, metrics)
 
-        client.log_tags(rid, {
-            "workflow_step": "dataset_validation",
-            "validation_status": output.status,
-        })
+        client.log_tags(
+            rid,
+            {
+                "workflow_step": "dataset_validation",
+                "validation_status": output.status,
+            },
+        )
 
         for artifact_path in output.artifacts:
             client.log_artifact(rid, artifact_path)

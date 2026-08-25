@@ -65,9 +65,7 @@ class PseudoLabeler:
                 existing_label = existing_labels_dir / (img.stem + ".txt")
                 if existing_label.exists():
                     num_skipped += 1
-                    records.append(
-                        PseudoLabelRecord(image=img.name, skipped_existing_label=True)
-                    )
+                    records.append(PseudoLabelRecord(image=img.name, skipped_existing_label=True))
                     continue
 
             try:

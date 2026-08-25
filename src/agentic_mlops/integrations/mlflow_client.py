@@ -139,9 +139,7 @@ class LocalMLflowTrackingClient(MLflowTrackingClientBase):
         timestamp = int(time.time() * 1000)
         for key, value in metrics.items():
             try:
-                self._client.log_metric(
-                    run_id, str(key)[:250], float(value), timestamp=timestamp
-                )
+                self._client.log_metric(run_id, str(key)[:250], float(value), timestamp=timestamp)
             except Exception as exc:
                 logger.warning("Failed to log metric %s: %s", key, exc)
 

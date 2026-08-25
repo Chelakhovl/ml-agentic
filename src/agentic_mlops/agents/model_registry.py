@@ -93,23 +93,17 @@ class ModelRegistryAgent(BaseAgent):
         try:
             train_data = _load_json(inp.training_output_path)
         except (OSError, json.JSONDecodeError) as exc:
-            return _failed(
-                f"Cannot read training_output.json: {exc}", inp.model_name
-            )
+            return _failed(f"Cannot read training_output.json: {exc}", inp.model_name)
 
         try:
             eval_data = _load_json(inp.evaluation_output_path)
         except (OSError, json.JSONDecodeError) as exc:
-            return _failed(
-                f"Cannot read evaluation_output.json: {exc}", inp.model_name
-            )
+            return _failed(f"Cannot read evaluation_output.json: {exc}", inp.model_name)
 
         try:
             approval_data = _load_json(inp.approval_decision_path)
         except (OSError, json.JSONDecodeError) as exc:
-            return _failed(
-                f"Cannot read approval_decision.json: {exc}", inp.model_name
-            )
+            return _failed(f"Cannot read approval_decision.json: {exc}", inp.model_name)
 
         # ── Gate 1: approval status ───────────────────────────────────────────
         approval_status = approval_data.get("status", "")
@@ -234,12 +228,15 @@ class ModelRegistryAgent(BaseAgent):
         if metrics:
             client.log_metrics(rid, metrics)
 
-        client.log_tags(rid, {
-            "workflow_step": "model_registry",
-            "registry_status": str(output.status),
-            "registered_model_name": inp.model_name,
-            "registered_model_version": str(output.version),
-        })
+        client.log_tags(
+            rid,
+            {
+                "workflow_step": "model_registry",
+                "registry_status": str(output.status),
+                "registered_model_name": inp.model_name,
+                "registered_model_version": str(output.version),
+            },
+        )
 
         for artifact in output.registration_artifacts:
             client.log_artifact(rid, artifact.path)

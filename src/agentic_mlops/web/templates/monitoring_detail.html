@@ -163,6 +163,35 @@
 </div>
 {% endif %}
 
+{# ── Hard sample ingestion CLI hint ────────────────────────────────────────── #}
+{% if hard_samples %}
+{% set manifest_path = report.get('hard_samples_manifest_path') or ('runs/' ~ workflow_id ~ '/artifacts/' ~ step ~ '/hard_samples_manifest.json') %}
+<div class="card" style="margin-bottom:16px; border-left:3px solid var(--accent)">
+  <div class="card-title">Feed Hard Samples Back into Data Intake</div>
+  <p style="margin:6px 0 10px; font-size:13px; color:var(--muted)">
+    Run the following command to stage these {{ hard_samples | length }} image(s) and run DataIntakeAgent over them:
+  </p>
+  <div style="position:relative">
+    <pre style="background:var(--sidebar-bg); border:1px solid var(--border); border-radius:var(--radius);
+                padding:12px 44px 12px 14px; font-size:12px; white-space:pre-wrap; word-break:break-all;
+                overflow-x:auto; margin:0" id="ingestCmd">agentic-mlops ingest-hard-samples {{ manifest_path }} \
+  --images-source-dir /path/to/original/images \
+  --dataset-name {{ report.get('endpoint_name', 'hard_samples') }}_retraining \
+  --output-dir runs/{{ workflow_id }}/artifacts/hard_sample_ingestion</pre>
+    <button onclick="navigator.clipboard.writeText(document.getElementById('ingestCmd').innerText)"
+            title="Copy command"
+            style="position:absolute; top:8px; right:8px; background:var(--accent); color:#fff;
+                   border:none; border-radius:4px; padding:4px 9px; font-size:11px; cursor:pointer">
+      Copy
+    </button>
+  </div>
+  <p style="margin:8px 0 0; font-size:12px; color:var(--muted)">
+    Replace <code>--images-source-dir</code> with the directory where the original inference images are stored.
+    The agent stages found images, deduplicates, and writes a <code>dataset_manifest.json</code> ready for the next training run.
+  </p>
+</div>
+{% endif %}
+
 {# ── Hard samples table ─────────────────────────────────────────────────────── #}
 <div class="card">
   <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px">

@@ -125,9 +125,7 @@ def test_failed_evaluation_cannot_be_approved(tmp_path: Path) -> None:
         message="Evaluation blocked: upstream training status is 'failed'.",
     )
     agent = HumanApprovalAgent(artifacts_dir=tmp_path / "approval")
-    result = agent.run(
-        _make_input(eval_path, tmp_path / "approval", ApprovalAction.APPROVE_MODEL)
-    )
+    result = agent.run(_make_input(eval_path, tmp_path / "approval", ApprovalAction.APPROVE_MODEL))
 
     assert result.success is False
     assert any("cannot approve" in e.lower() for e in result.errors)
@@ -138,9 +136,7 @@ def test_failed_evaluation_cannot_be_approved_even_with_force(tmp_path: Path) ->
     eval_path = _write_eval_report(tmp_path / "eval", recommendation=None)
     agent = HumanApprovalAgent(artifacts_dir=tmp_path / "approval")
     result = agent.run(
-        _make_input(
-            eval_path, tmp_path / "approval", ApprovalAction.APPROVE_MODEL, force=True
-        )
+        _make_input(eval_path, tmp_path / "approval", ApprovalAction.APPROVE_MODEL, force=True)
     )
 
     assert result.success is False
@@ -234,12 +230,17 @@ def test_cli_non_interactive_mode(tmp_path: Path) -> None:
         app,
         [
             "approve",
-            "--evaluation-output", str(eval_path),
-            "--output-dir", str(out_dir),
-            "--approver", "CI",
+            "--evaluation-output",
+            str(eval_path),
+            "--output-dir",
+            str(out_dir),
+            "--approver",
+            "CI",
             "--no-interactive",
-            "--action", "request_retraining",
-            "--comment", "Automated test",
+            "--action",
+            "request_retraining",
+            "--comment",
+            "Automated test",
         ],
     )
 
