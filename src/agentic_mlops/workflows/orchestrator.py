@@ -950,6 +950,15 @@ class OrchestratorWorkflow:
                 dataset_validation_status=validation.get("status") if validation else None,
             )
         )
+        # LOCAL_DRY_RUN doesn't write training_output.json; write it here so
+        # downstream steps (model_registry Gate 4) can read it regardless of mode.
+        output_json_path = step_dir / "training_output.json"
+        if not output_json_path.exists():
+            import json as _json  # noqa: PLC0415
+
+            output_json_path.write_text(
+                _json.dumps(result.model_dump(mode="json"), indent=2), encoding="utf-8"
+            )
         return _StepOutcome(
             success=result.success,
             status_label="COMPLETED" if result.success else "FAILED",
@@ -958,7 +967,7 @@ class OrchestratorWorkflow:
             key_outputs={
                 "best_weights_path": result.best_weights_path,
                 "job_status": str(result.job_status),
-                "training_output_path": str(step_dir / "training_output.json"),
+                "training_output_path": str(output_json_path),
                 "started_at": result.remote_started_at,
                 "completed_at": result.remote_completed_at,
             },
@@ -1102,6 +1111,11 @@ class OrchestratorWorkflow:
                 evaluation_config_path=inp.evaluation_config_path,
             )
         )
+        # Write the full EvaluationOutput so ModelRegistryAgent Gate 3 can read
+        # success=True.  The EvaluationAgent only writes evaluation_report.json
+        # (human-readable subset); this is the machine-readable full record.
+        output_json_path = step_dir / "evaluation_output.json"
+        output_json_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
         return _StepOutcome(
             success=result.success,
             status_label="COMPLETED" if result.success else "FAILED",
@@ -1109,7 +1123,7 @@ class OrchestratorWorkflow:
             artifacts=result.artifacts,
             key_outputs={
                 "report_path": str(step_dir / "evaluation_report.json"),
-                "output_json_path": str(step_dir / "evaluation_output.json"),
+                "output_json_path": str(output_json_path),
                 "recommendation": str(result.recommendation) if result.recommendation else None,
                 "started_at": result.started_at,
                 "completed_at": result.completed_at,

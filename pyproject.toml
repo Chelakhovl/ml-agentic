@@ -77,4 +77,5 @@ filterwarnings = [
 ]
 markers = [
     "azure_integration: requires a real Azure ML workspace + credentials (az login or service principal env vars). Opt-in only -- automatically skipped unless --azure-config is passed. Run with: pytest tests/integration -m azure_integration --azure-config configs/azure_ml.yaml",
+    "slow: marks tests that take significantly longer than average (deselect with -m 'not slow')",
 ]
