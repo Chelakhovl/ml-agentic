@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import traceback
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -200,6 +201,25 @@ class OrchestratorWorkflow:
             self._notifier.send(event_name, payload)
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("Notification send failed: %s", exc)
+
+    def _run_auxiliary_parallel(self, tasks: list[Callable[[], None]]) -> None:
+        """Run best-effort side-effect tasks concurrently (blob uploads, notifications).
+
+        All tasks are independent I/O operations with no shared state mutations.
+        Each swallows its own exceptions so one slow/failing upload never blocks
+        the pipeline. The executor waits for all tasks to finish before returning,
+        so callers can treat this as a synchronous barrier while still gaining
+        the parallelism benefit.
+        """
+        if not tasks:
+            return
+        with ThreadPoolExecutor(max_workers=min(len(tasks), 4)) as ex:
+            futures = [ex.submit(t) for t in tasks]
+        for fut in futures:
+            try:
+                fut.result()
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning("Auxiliary task failed (non-fatal)", extra={"error": str(exc)})
 
     def _record_step_cost(
         self,
@@ -588,14 +608,16 @@ class OrchestratorWorkflow:
 
             # Best-effort blob upload — happens regardless of outcome so partial
             # artifacts are available for debugging even on failure.
+            # The three uploads are independent I/O; run them in parallel.
             step_dir = output_root / step
-            self._artifact_store.upload_directory(step_dir, f"{inp.workflow_id}/{step}")
-            self._artifact_store.upload_file(
-                store.workflow_dir / "state.json", f"{inp.workflow_id}/state.json"
-            )
-            self._artifact_store.upload_file(
-                store.workflow_dir / "audit_log.jsonl", f"{inp.workflow_id}/audit_log.jsonl"
-            )
+            _wid = inp.workflow_id
+            _wdir = store.workflow_dir
+            _store = self._artifact_store
+            self._run_auxiliary_parallel([
+                lambda _d=step_dir, _k=f"{_wid}/{step}": _store.upload_directory(_d, _k),
+                lambda _f=_wdir / "state.json", _k=f"{_wid}/state.json": _store.upload_file(_f, _k),
+                lambda _f=_wdir / "audit_log.jsonl", _k=f"{_wid}/audit_log.jsonl": _store.upload_file(_f, _k),
+            ])
 
             if not outcome.success:
                 terminal = (
@@ -638,6 +660,9 @@ class OrchestratorWorkflow:
             completed.append(step)
             state["completed_steps"] = completed
             self._transition(state, f"{step.upper()}_COMPLETED", steps)
+            # State-mutating auxiliary ops run sequentially before save_state so
+            # their results (baseline_comparison_path, risk_report_path, etc.) are
+            # captured in the persisted state.
             if step == "evaluation":
                 self._run_baseline_comparison_if_configured(
                     inp, output_root, step_outputs, all_artifacts
@@ -646,14 +671,16 @@ class OrchestratorWorkflow:
                 self._run_risk_scoring_if_configured(output_root, step_outputs, all_artifacts)
             self._record_step_cost(step, inp, azure_config, outcome)
             store.save_state(state)
-            self._notify(
-                "step_completed",
-                {
-                    "workflow_id": inp.workflow_id,
-                    "step": step,
-                    "status": outcome.status_label,
-                },
-            )
+            # Notification and final state.json re-upload are independent I/O;
+            # run them in parallel to avoid head-of-line blocking on slow webhooks.
+            _status = outcome.status_label
+            self._run_auxiliary_parallel([
+                lambda _s=step, _st=_status: self._notify(
+                    "step_completed",
+                    {"workflow_id": _wid, "step": _s, "status": _st},
+                ),
+                lambda _f=_wdir / "state.json", _k=f"{_wid}/state.json": _store.upload_file(_f, _k),
+            ])
 
         self._transition(state, "COMPLETED", steps)
         return self._finish(
