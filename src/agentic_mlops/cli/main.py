@@ -3070,5 +3070,108 @@ def lint_config(
         raise typer.Exit(code=1)
 
 
+@app.command("watch")
+def watch_workflow(
+    workflow_id: str = typer.Argument(..., help="Workflow ID to watch"),
+    runs_dir: Path = typer.Option(
+        Path("runs"),
+        "--runs-dir",
+        help="Root directory for workflow run state files",
+    ),
+    interval: float = typer.Option(
+        1.0,
+        "--interval",
+        "-i",
+        help="Poll interval in seconds",
+    ),
+    follow: bool = typer.Option(
+        False,
+        "--follow",
+        "-f",
+        help="Keep watching even after the workflow reaches a terminal state",
+    ),
+) -> None:
+    """Tail a workflow's audit log live.
+
+    Prints all existing audit events, then polls for new ones every INTERVAL
+    seconds.  Stops automatically when the workflow reaches a terminal state
+    (completed / failed / blocked) unless --follow is set.
+
+    Exit codes: 0 = workflow completed; 1 = workflow failed/blocked; 2 = not found.
+    """
+    import json as _json
+    import time as _time
+
+    _TERMINAL = {"completed", "failed", "blocked"}
+    _ICONS = {
+        "workflow_started": "▶",
+        "workflow_resumed": "↩",
+        "workflow_finished": "■",
+        "workflow_already_completed": "✓",
+        "step_started": "→",
+        "step_finished": "✓",
+        "step_exception": "✕",
+        "workflow_failed_precheck": "✕",
+    }
+
+    state_path = runs_dir / workflow_id / "state.json"
+    audit_path = runs_dir / workflow_id / "audit_log.jsonl"
+
+    if not state_path.exists():
+        console.print(f"[red]Workflow '{workflow_id}' not found in {runs_dir}[/red]")
+        raise typer.Exit(code=2)
+
+    def _fmt(entry: dict) -> str:
+        ev = entry.get("event", "")
+        icon = _ICONS.get(ev, "·")
+        ts_raw = entry.get("timestamp", "")
+        try:
+            ts = ts_raw[:19].replace("T", " ")
+        except Exception:
+            ts = ts_raw
+        parts = [f"[dim]{ts}[/dim]  {icon} [bold]{ev}[/bold]"]
+        if entry.get("step"):
+            parts.append(f"  step=[cyan]{entry['step']}[/cyan]")
+        if entry.get("status"):
+            parts.append(f"  status={entry['status']}")
+        if entry.get("error"):
+            parts.append(f"  [red]error: {entry['error']}[/red]")
+        return "".join(parts)
+
+    seen = 0
+    console.print(f"\n[bold]Watching[/bold] [cyan]{workflow_id}[/cyan]  (Ctrl-C to stop)\n")
+
+    try:
+        while True:
+            if audit_path.exists():
+                with open(audit_path, encoding="utf-8") as fh:
+                    lines = fh.readlines()
+                for raw in lines[seen:]:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        entry = _json.loads(raw)
+                    except Exception:
+                        continue
+                    console.print(_fmt(entry))
+                seen = len(lines)
+
+            try:
+                with open(state_path, encoding="utf-8") as fh:
+                    state = _json.load(fh)
+                status = state.get("status", "unknown")
+            except Exception:
+                status = "unknown"
+
+            if status in _TERMINAL and not follow:
+                console.print(f"\n[bold]Workflow {status}.[/bold]")
+                raise typer.Exit(code=0 if status == "completed" else 1)
+
+            _time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped.[/dim]")
+
+
 if __name__ == "__main__":
     app()

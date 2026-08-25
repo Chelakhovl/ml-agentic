@@ -937,6 +937,26 @@ async def teams_approval_webhook(request: Request):
 # ── JSON API ──────────────────────────────────────────────────────────────────
 
 
+@router.get("/api/dashboard/stats")
+async def dashboard_stats_api(request: Request):
+    """Return live dashboard stats — used for periodic JS polling."""
+    workflows = reader.list_workflows(_runs(request))
+    by_status: dict[str, int] = {}
+    for wf in workflows:
+        s = wf.get("status", "unknown")
+        by_status[s] = by_status.get(s, 0) + 1
+    return JSONResponse(
+        {
+            "total": len(workflows),
+            "running": by_status.get("running", 0),
+            "pending": by_status.get("pending_approval", 0),
+            "failed": by_status.get("failed", 0) + by_status.get("blocked", 0),
+            "completed": by_status.get("completed", 0),
+            "workflow_ids": [wf.get("workflow_id") for wf in workflows],
+        }
+    )
+
+
 @router.get("/api/workflows/{workflow_id}/audit")
 async def workflow_audit_api(request: Request, workflow_id: str, since: int = 0):
     """Return audit log entries. `since` is the count the caller already has."""

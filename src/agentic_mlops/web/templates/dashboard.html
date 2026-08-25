@@ -4,25 +4,25 @@
 {% block content %}
 <div class="page-header">
   <h1>Dashboard</h1>
-  <p>Overview of all pipeline runs</p>
+  <p>Overview of all pipeline runs &nbsp;<span id="dashLastUpdated" class="muted" style="font-size:11px"></span></p>
 </div>
 
 <div class="stat-row">
   <div class="stat-card">
     <div class="stat-label">Total Runs</div>
-    <div class="stat-value">{{ stats.total }}</div>
+    <div class="stat-value" data-stat="total">{{ stats.total }}</div>
   </div>
   <div class="stat-card green">
     <div class="stat-label">Completed</div>
-    <div class="stat-value">{{ stats.completed }}</div>
+    <div class="stat-value" data-stat="completed">{{ stats.completed }}</div>
   </div>
   <div class="stat-card orange">
     <div class="stat-label">Running / Pending</div>
-    <div class="stat-value">{{ stats.running + stats.pending }}</div>
+    <div class="stat-value" data-stat="running">{{ stats.running + stats.pending }}</div>
   </div>
   <div class="stat-card red">
     <div class="stat-label">Failed / Blocked</div>
-    <div class="stat-value">{{ stats.failed }}</div>
+    <div class="stat-value" data-stat="failed">{{ stats.failed }}</div>
   </div>
 </div>
 
@@ -329,5 +329,37 @@ function doCompare() {
 
 // Initialize pagination on first load
 applyFilter();
+
+// ── Periodic stats refresh ────────────────────────────────────────────────────
+(function() {
+  var statKeys = ['total', 'running', 'pending', 'failed', 'completed'];
+  var statEls = {};
+  statKeys.forEach(function(k) { statEls[k] = document.querySelector('.stat-value[data-stat="' + k + '"]'); });
+
+  var lastUpdEl = document.getElementById('dashLastUpdated');
+
+  function refreshStats() {
+    fetch('/api/dashboard/stats')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        statKeys.forEach(function(k) {
+          if (statEls[k]) statEls[k].textContent = d[k] || 0;
+        });
+        if (lastUpdEl) {
+          var now = new Date();
+          lastUpdEl.textContent = 'Last updated ' + now.toLocaleTimeString();
+        }
+        // If new workflows appeared that aren't in the table, reload the page
+        var tableIds = new Set([...document.querySelectorAll('#wfTable tbody tr[data-wf-real-id]')]
+          .map(function(r) { return r.getAttribute('data-wf-real-id'); }));
+        if (d.workflow_ids && d.workflow_ids.some(function(id) { return id && !tableIds.has(id); })) {
+          window.location.reload();
+        }
+      })
+      .catch(function() {});
+  }
+
+  setInterval(refreshStats, 15000);
+})();
 </script>
 {% endblock %}

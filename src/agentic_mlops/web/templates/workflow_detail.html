@@ -411,6 +411,22 @@
     if (initialStatus !== 'running') return;
 
     const wfId = {{ state.workflow_id | tojson }};
+
+    // "Live" indicator
+    const headerP = document.querySelector('.page-header p');
+    let liveEl = null;
+    if (headerP) {
+      liveEl = document.createElement('span');
+      liveEl.id = 'liveIndicator';
+      liveEl.style.cssText = 'margin-left:8px; font-size:11px; color:var(--muted)';
+      liveEl.textContent = '● live';
+      headerP.appendChild(liveEl);
+    }
+    function setLastUpdated(ts) {
+      if (!liveEl) return;
+      try { liveEl.textContent = '● live · updated ' + new Date(ts).toLocaleTimeString(); } catch(e) {}
+    }
+
     const es = new EventSource('/api/workflows/' + wfId + '/stream');
 
     es.onmessage = function(event) {
@@ -421,15 +437,18 @@
         topBadge.textContent = data.status;
         topBadge.className = 'badge badge-' + data.status.replace(/_/g, '-');
       }
+      if (data.updated_at) setLastUpdated(data.updated_at);
 
       if (data.status !== 'running') {
         es.close();
+        if (liveEl) liveEl.textContent = '■ done';
         window.location.reload();
       }
     };
 
     es.onerror = function() {
       es.close();
+      if (liveEl) liveEl.textContent = '⚠ disconnected — reloading…';
       // Fallback: reload after 5 s to show latest state
       setTimeout(function() { window.location.reload(); }, 5000);
     };
