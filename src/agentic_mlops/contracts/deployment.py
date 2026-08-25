@@ -45,6 +45,14 @@ class DeploymentInput(BaseModel):
     endpoint_name: str | None = None
     backend: DeploymentBackend = DeploymentBackend.LOCAL
 
+    # Canary rollout percentage (1–100, default 100 = full cutover).
+    # For backend="azure_ml": routes this percentage of traffic to the new
+    # deployment; the previous deployment keeps 100 - canary_percentage.
+    # For backend="local": recorded in deployment_manifest.json / current.json
+    # as metadata; local serving doesn't route real traffic so the value is
+    # informational (useful for CI validation and downstream tooling).
+    canary_percentage: int = Field(default=100, ge=1, le=100)
+
     # H6 safety gate (spec: "production только после approval") — both required
     # when target == production; staging can proceed without them ("semi-automatic").
     production_approval_path: str | None = None
@@ -75,6 +83,7 @@ class DeploymentOutput(ToolResult):
     smoke_test_results: list[str] = Field(default_factory=list)
     deployment_report_path: str | None = None
     block_reason: str | None = None
+    canary_percentage: int = 100
 
     # backend="azure_ml" / "aks" only
     scoring_uri: str | None = None

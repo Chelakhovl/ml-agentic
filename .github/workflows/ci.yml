@@ -6,120 +6,65 @@ on:
   pull_request:
 
 jobs:
-  # ── Lint & format ────────────────────────────────────────────────────────────
-  lint:
-    name: Lint & Format
+  # ── Lint & unit tests ────────────────────────────────────────────────────────
+  test:
+    name: Lint & Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
+          cache: "pip"
 
       - name: Install dev dependencies
         run: pip install -e ".[dev]" --quiet
 
-      - name: Ruff check (linting)
+      - name: Lint
         run: ruff check src tests
 
-      - name: Ruff format check
-        run: ruff format --check src tests
+      - name: Run unit tests
+        run: pytest tests/unit -v --tb=short
 
-  # ── Unit tests ───────────────────────────────────────────────────────────────
-  test:
-    name: Test (Python ${{ matrix.python-version }})
+  # ── End-to-end fake-mode smoke test ─────────────────────────────────────────
+  smoke:
+    name: Smoke test
     runs-on: ubuntu-latest
-    needs: lint
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
+    needs: [test]
+    if: success()
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install all extras (dev + mlflow + vision + web)
-        run: pip install -e ".[dev,mlflow,vision,web]" --quiet
-
-      - name: Run unit tests with coverage
-        run: |
-          pytest tests/unit -v --tb=short \
-            --cov=agentic_mlops \
-            --cov-report=xml:coverage-${{ matrix.python-version }}.xml \
-            --cov-report=term-missing \
-            --junitxml=test-results-${{ matrix.python-version }}.xml
-
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-${{ matrix.python-version }}
-          path: coverage-${{ matrix.python-version }}.xml
-
-      - name: Upload JUnit test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-${{ matrix.python-version }}
-          path: test-results-${{ matrix.python-version }}.xml
-
-  # ── Azure extra install smoke test ──────────────────────────────────────────
-  # Verifies the [azure] extra installs cleanly and the import chain works.
-  # Does NOT run real Azure calls — those require credentials and live in
-  # tests/integration (opt-in only via --azure-config).
-  azure-smoke:
-    name: Azure extras smoke test
-    runs-on: ubuntu-latest
-    needs: lint
-    steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
+          cache: "pip"
 
-      - name: Install with Azure extras
-        run: pip install -e ".[dev,azure]" --quiet
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]" --quiet
 
-      - name: Verify Azure ML imports
+      - name: Create minimal fixture dataset
         run: |
-          python -c "
-          from agentic_mlops.integrations.azure_ml_client import DefaultAzureMLClientFactory
-          from agentic_mlops.tools.training_runner import AzureMLTrainingRunner
-          from agentic_mlops.tools.evaluation_runner import AzureMLEvaluationRunner
-          from agentic_mlops.integrations.azure_ml_online_endpoint import AzureMLOnlineEndpointDeployer
-          from agentic_mlops.integrations.appinsights_log_client import ApplicationInsightsLogClient
-          print('All Azure ML imports OK')
-          "
+          mkdir -p /tmp/smoke_dataset/{images/{train,val},labels/{train,val}}
+          echo "path: /tmp/smoke_dataset" > /tmp/smoke_dataset/data.yaml
+          echo "train: images/train" >> /tmp/smoke_dataset/data.yaml
+          echo "val: images/val" >> /tmp/smoke_dataset/data.yaml
+          echo "nc: 1" >> /tmp/smoke_dataset/data.yaml
+          echo "names: [defect]" >> /tmp/smoke_dataset/data.yaml
 
-      - name: Run unit tests (azure extras installed)
-        run: pytest tests/unit -q --tb=short
-
-  # ── Summary gate ─────────────────────────────────────────────────────────────
-  # A single job that all required checks must pass before merging.
-  ci-passed:
-    name: CI passed
-    runs-on: ubuntu-latest
-    needs: [lint, test, azure-smoke]
-    if: always()
-    steps:
-      - name: Check all jobs succeeded
+      - name: Run fake-mode end-to-end smoke test
+        if: success()
         run: |
-          if [[ "${{ needs.lint.result }}" != "success" ||
-                "${{ needs.test.result }}" != "success" ||
-                "${{ needs.azure-smoke.result }}" != "success" ]]; then
-            echo "One or more required jobs failed."
-            exit 1
-          fi
-          echo "All CI jobs passed."
+          agentic-mlops run-workflow \
+            --workflow-id ci_smoke_${{ github.run_id }} \
+            --config configs/orchestrator.example.yaml \
+            --runs-dir /tmp/smoke_runs

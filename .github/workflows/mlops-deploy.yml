@@ -13,13 +13,21 @@
 #    Set GITHUB_ACTIONS_TOKEN (PAT with actions:write) as an environment
 #    variable or in GithubActionsConfig.token.
 #
-# 2. Add these repository secrets (Settings → Secrets → Actions):
-#    AZURE_CLIENT_ID        Service principal app ID
-#    AZURE_TENANT_ID        Azure tenant ID
-#    AZURE_CLIENT_SECRET    Service principal secret
-#    AZURE_SUBSCRIPTION_ID  Azure subscription ID (needed for az login --service-principal)
+# Required GitHub repository secrets (Settings → Secrets → Actions)
+# ──────────────────────────────────────────────────────────────────
+#   AZURE_CLIENT_ID        Service principal application (client) ID.
+#                          Used by azure/login and the agentic-mlops Azure ML backend.
+#   AZURE_TENANT_ID        Azure Active Directory tenant ID.
+#   AZURE_CLIENT_SECRET    Service principal client secret.
+#                          Rotate regularly; grant only the minimum RBAC roles needed
+#                          (AzureML Data Scientist + Storage Blob Data Contributor).
+#   AZURE_SUBSCRIPTION_ID  Azure subscription ID — required by az CLI and MLClient.
+#   GITHUB_ACTIONS_TOKEN   Personal Access Token (PAT) with the `actions:write` scope.
+#                          Used by GithubActionsClient inside OrchestratorWorkflow to
+#                          dispatch this workflow_dispatch event programmatically.
+#                          Should be scoped to this repository only.
 #
-# 3. Copy configs/azure_ml.example.yaml → configs/azure_ml.yaml, fill in your
+# 2. Copy configs/azure_ml.example.yaml → configs/azure_ml.yaml, fill in your
 #    workspace details, and commit it (it has no secrets, only resource names).
 #
 # What it does
@@ -27,6 +35,16 @@
 # Runs `agentic-mlops deploy-model` for the registered model that the
 # Orchestrator pipeline just promoted.  Defaults to staging; set the
 # `target` input to "production" together with a pre-existing approval JSON.
+#
+# Job sequence
+# ────────────
+#  validate  →  deploy  →  smoke-test
+#
+# validate:   installs the package and lints configs/orchestrator.example.yaml
+#             to catch broken configs before any cloud resource is touched.
+# deploy:     the existing deployment logic (local registry or Azure ML endpoint).
+# smoke-test: runs a full fake-mode run-mvp to verify the package still works
+#             after deploy (end-to-end, no real cloud calls).
 #
 # Triggered inputs
 # ────────────────
@@ -65,10 +83,49 @@ on:
           - staging
           - production
 
+# OIDC token write is required for azure/login with federated credentials.
+# contents:read is the minimum for checkout.
+permissions:
+  contents: read
+  id-token: write
+
+# Prevent two deploys to the same target from running concurrently.
+# cancel-in-progress: false ensures a queued deploy waits rather than being
+# dropped — critical for production where you never want a deploy silently
+# cancelled mid-flight.
+concurrency:
+  group: deploy-${{ inputs.target }}
+  cancel-in-progress: false
+
 jobs:
+  # ── Pre-deploy validation ────────────────────────────────────────────────────
+  validate:
+    name: Validate config and package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install agentic-mlops
+        run: pip install -e ".[dev]" --quiet
+
+      - name: Lint orchestrator config
+        run: agentic-mlops lint-config configs/orchestrator.example.yaml
+
+  # ── Deployment ───────────────────────────────────────────────────────────────
   deploy:
     name: Deploy ${{ inputs.model_name }} → ${{ inputs.target }}
     runs-on: ubuntu-latest
+    needs: [validate]
     environment: ${{ inputs.target }}   # requires env protection rules for production
 
     steps:
@@ -144,4 +201,41 @@ jobs:
           path: |
             runs/${{ inputs.mlops_workflow_id }}/artifacts/deployment_report.json
             outputs/deployments/**/*.json
+          if-no-files-found: ignore
+
+  # ── Post-deploy smoke test ───────────────────────────────────────────────────
+  smoke-test:
+    name: Post-deploy smoke test
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: success()
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install agentic-mlops
+        run: pip install -e ".[dev]" --quiet
+
+      - name: Run end-to-end fake-mode smoke test
+        run: |
+          agentic-mlops run-mvp \
+            --dataset-path tests/fixtures/sample_dataset \
+            --data-yaml tests/fixtures/sample_dataset/data.yaml \
+            --training-config configs/training.example.yaml \
+            --output-dir /tmp/ci_smoke_${{ github.run_id }} \
+            --dry-run --no-interactive --approval-action approve_model
+
+      - name: Upload smoke-test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-report-${{ github.run_id }}
+          path: /tmp/ci_smoke_${{ github.run_id }}/**/*.json
           if-no-files-found: ignore

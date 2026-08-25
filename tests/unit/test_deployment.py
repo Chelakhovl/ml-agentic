@@ -741,3 +741,197 @@ def test_cli_deploy_model_exits_1_on_invalid_backend(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1
     assert "Invalid backend" in result.output
+
+
+# ── 33-36. Canary rollout ─────────────────────────────────────────────────────
+
+
+def test_local_deploy_canary_recorded_in_manifest(tmp_path: Path) -> None:
+    weights = _make_weights(tmp_path)
+    deployment_dir = tmp_path / "deployments"
+    result = ModelDeployer().deploy(
+        DeploymentInput(
+            model_path=str(weights),
+            model_name="m",
+            export_format=ExportFormat.PT,
+            deployment_dir=str(deployment_dir),
+            canary_percentage=50,
+        )
+    )
+    assert result.success is True
+    assert result.canary_percentage == 50
+
+    manifest_path = (
+        deployment_dir / "m-staging" / "releases" / str(result.release) / "deployment_manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["canary_percentage"] == 50
+
+    current_data = json.loads(
+        (deployment_dir / "m-staging" / "current.json").read_text(encoding="utf-8")
+    )
+    assert current_data["canary_percentage"] == 50
+
+
+def test_local_deploy_default_canary_100(tmp_path: Path) -> None:
+    weights = _make_weights(tmp_path)
+    result = ModelDeployer().deploy(
+        DeploymentInput(
+            model_path=str(weights),
+            model_name="m",
+            export_format=ExportFormat.PT,
+            deployment_dir=str(tmp_path / "deployments"),
+        )
+    )
+    assert result.success is True
+    assert result.canary_percentage == 100
+
+
+def test_azure_ml_deploy_canary_partial_traffic(tmp_path: Path) -> None:
+    import sys
+    from unittest.mock import MagicMock, patch
+
+    from agentic_mlops.contracts.azure_ml import AzureMLConfig
+    from agentic_mlops.integrations.azure_ml_online_endpoint import AzureMLOnlineEndpointDeployer
+
+    # Build a minimal config
+    cfg = AzureMLConfig.model_validate(
+        {
+            "subscription_id": "sub-1",
+            "resource_group": "rg",
+            "workspace_name": "ws",
+            "compute_name": "gpu",
+            "environment": {"mode": "registered", "registered_environment": "azureml:env:1"},
+        }
+    )
+
+    # Fake deployment object that list() will return (the incumbent)
+    class _FakeExistingDeployment:
+        name = "old-deployment"
+
+    # Fake online_deployments with list() returning the incumbent
+    class _FakeDeploymentsOps:
+        def __init__(self):
+            self.created = []
+            self._captured_traffic = None
+
+        def begin_create_or_update(self, dep):
+            self.created.append(dep)
+
+            class _Poller:
+                def result(inner_self):
+                    m = MagicMock()
+                    m.name = dep.name
+                    return m
+
+            return _Poller()
+
+        def list(self, endpoint_name):
+            return [_FakeExistingDeployment()]
+
+    # Fake online_endpoints that captures traffic setting
+    class _FakeEndpointsOps:
+        def __init__(self):
+            self.created = []
+            self.traffic_history = []
+
+        def begin_create_or_update(self, endpoint):
+            self.created.append(endpoint)
+            if hasattr(endpoint, "traffic") and endpoint.traffic:
+                self.traffic_history.append(dict(endpoint.traffic))
+
+            class _Poller:
+                def result(inner_self):
+                    m = MagicMock()
+                    m.scoring_uri = "https://ep.score"
+                    return m
+
+            return _Poller()
+
+    fake_deployments = _FakeDeploymentsOps()
+    fake_endpoints = _FakeEndpointsOps()
+
+    class _FakeClient:
+        online_endpoints = fake_endpoints
+        online_deployments = fake_deployments
+
+    class _FakeFactory:
+        def create(self, config):
+            return _FakeClient()
+
+    deployer = AzureMLOnlineEndpointDeployer(cfg, client_factory=_FakeFactory())
+    inp = DeploymentInput(
+        model_name="my-model",
+        backend=DeploymentBackend.AZURE_ML,
+        azure_model_name="my-model",
+        azure_model_version=2,
+        canary_percentage=30,
+    )
+
+    mock_entities = MagicMock(
+        ManagedOnlineEndpoint=lambda **kw: MagicMock(name=kw.get("name"), traffic={}),
+        ManagedOnlineDeployment=lambda **kw: MagicMock(
+            name=kw.get("name"), endpoint_name=kw.get("endpoint_name")
+        ),
+        CodeConfiguration=lambda **kw: MagicMock(),
+        Environment=lambda **kw: MagicMock(),
+    )
+    with patch.dict(sys.modules, {"azure.ai.ml.entities": mock_entities}):
+        result = deployer.deploy(inp, tmp_path / "artifacts")
+
+    assert result.success is True
+    assert result.canary_percentage == 30
+    # The last traffic update should split between new and incumbent
+    final_traffic = fake_endpoints.traffic_history[-1]
+    new_dep_name = f"my-model-v{inp.azure_model_version}".replace("_", "-")
+    assert final_traffic.get(new_dep_name) == 30
+    assert final_traffic.get("old-deployment") == 70
+
+
+def test_azure_ml_deploy_canary_full_cutover(tmp_path: Path) -> None:
+    import sys
+    from unittest.mock import MagicMock, patch
+
+    from agentic_mlops.contracts.azure_ml import AzureMLConfig
+    from agentic_mlops.integrations.azure_ml_client import FakeAzureMLClientFactory
+    from agentic_mlops.integrations.azure_ml_online_endpoint import AzureMLOnlineEndpointDeployer
+
+    cfg = AzureMLConfig.model_validate(
+        {
+            "subscription_id": "sub-1",
+            "resource_group": "rg",
+            "workspace_name": "ws",
+            "compute_name": "gpu",
+            "environment": {"mode": "registered", "registered_environment": "azureml:env:1"},
+        }
+    )
+    factory = FakeAzureMLClientFactory()
+    deployer = AzureMLOnlineEndpointDeployer(cfg, client_factory=factory)
+    inp = DeploymentInput(
+        model_name="my-model",
+        backend=DeploymentBackend.AZURE_ML,
+        azure_model_name="my-model",
+        azure_model_version=5,
+        canary_percentage=100,
+    )
+
+    mock_entities = MagicMock(
+        ManagedOnlineEndpoint=lambda **kw: MagicMock(name=kw.get("name"), traffic={}),
+        ManagedOnlineDeployment=lambda **kw: MagicMock(
+            name=kw.get("name"), endpoint_name=kw.get("endpoint_name")
+        ),
+        CodeConfiguration=lambda **kw: MagicMock(),
+        Environment=lambda **kw: MagicMock(),
+    )
+    with patch.dict(sys.modules, {"azure.ai.ml.entities": mock_entities}):
+        result = deployer.deploy(inp, tmp_path / "artifacts")
+
+    assert result.success is True
+    assert result.canary_percentage == 100
+    # Traffic should be 100% to the new deployment — verify via the endpoint ops
+    client = factory.last_client
+    endpoint_ops = client.online_endpoints
+    # Last create_or_update call carries the traffic dict
+    last_endpoint = endpoint_ops.created[-1]
+    new_dep_name = "my-model-v5"
+    assert last_endpoint.traffic == {new_dep_name: 100}

@@ -19,7 +19,6 @@ import pytest
 
 from agentic_mlops.contracts.approvals import ApprovalAction
 from agentic_mlops.contracts.orchestrator import (
-    DEFAULT_STEPS,
     OrchestratorInput,
     OrchestratorStatus,
 )
@@ -27,7 +26,6 @@ from agentic_mlops.contracts.training_approval import TrainingApprovalAction
 from agentic_mlops.integrations.workflow_state_store import WorkflowStateStore
 from agentic_mlops.workflows.orchestrator import OrchestratorWorkflow
 from tests.conftest import make_valid_dataset
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -403,12 +401,12 @@ def test_two_workflow_ids_have_independent_state(tmp_path: Path) -> None:
 @pytest.mark.slow
 def test_full_11_step_pipeline(tmp_path: Path) -> None:
     """All 11 PIPELINE_STEPS run end-to-end with fake/dry-run runners and Pillow-valid images."""
-    from agentic_mlops.contracts.orchestrator import PIPELINE_STEPS  # noqa: PLC0415
-
     # Create raw images that Pillow can open (data_intake step uses Pillow if available).
     # Each image must have unique content — duplicate detection across splits fires
     # when all images share the same bytes.
     from PIL import Image  # noqa: PLC0415
+
+    from agentic_mlops.contracts.orchestrator import PIPELINE_STEPS  # noqa: PLC0415
 
     raw_data = tmp_path / "raw_images"
     raw_data.mkdir(parents=True)

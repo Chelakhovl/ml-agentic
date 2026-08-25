@@ -616,7 +616,9 @@ class OrchestratorWorkflow:
             self._run_auxiliary_parallel([
                 lambda _d=step_dir, _k=f"{_wid}/{step}": _store.upload_directory(_d, _k),
                 lambda _f=_wdir / "state.json", _k=f"{_wid}/state.json": _store.upload_file(_f, _k),
-                lambda _f=_wdir / "audit_log.jsonl", _k=f"{_wid}/audit_log.jsonl": _store.upload_file(_f, _k),
+                lambda _f=_wdir / "audit_log.jsonl", _k=f"{_wid}/audit_log.jsonl": (
+                    _store.upload_file(_f, _k)
+                ),
             ])
 
             if not outcome.success:

@@ -78,7 +78,37 @@ class AzureMLOnlineEndpointDeployer:
                 extra={"deployment_name": deployment_name, "endpoint_name": endpoint_name},
             )
 
-            endpoint.traffic = {deployment_name: 100}
+            # Canary routing: discover incumbent deployment (if any) to split traffic.
+            incumbent_name: str | None = None
+            if inp.canary_percentage < 100:
+                try:
+                    existing = list(
+                        ml_client.online_deployments.list(endpoint_name=endpoint_name)
+                    )
+                    for dep in existing:
+                        if getattr(dep, "name", None) != deployment_name:
+                            incumbent_name = dep.name
+                            break
+                except Exception:  # endpoint may not exist yet — silently ignore
+                    pass
+
+            if inp.canary_percentage < 100 and incumbent_name:
+                endpoint.traffic = {
+                    deployment_name: inp.canary_percentage,
+                    incumbent_name: 100 - inp.canary_percentage,
+                }
+                logger.info(
+                    "Canary traffic split applied",
+                    extra={
+                        "new": deployment_name,
+                        "new_pct": inp.canary_percentage,
+                        "incumbent": incumbent_name,
+                        "incumbent_pct": 100 - inp.canary_percentage,
+                    },
+                )
+            else:
+                endpoint.traffic = {deployment_name: 100}
+
             final_endpoint = ml_client.online_endpoints.begin_create_or_update(endpoint).result()
             scoring_uri = getattr(final_endpoint, "scoring_uri", None)
 
@@ -100,6 +130,7 @@ class AzureMLOnlineEndpointDeployer:
                 "instance_count": serving.instance_count,
                 "deployed_at": deployed_at,
                 "rollback_plan": inp.rollback_plan,
+                "canary_percentage": inp.canary_percentage,
             }
             artifacts_dir.mkdir(parents=True, exist_ok=True)
             manifest_path = artifacts_dir / "azure_deployment_manifest.json"
@@ -125,6 +156,7 @@ class AzureMLOnlineEndpointDeployer:
                 scoring_uri=scoring_uri,
                 azure_deployment_name=deployment_name,
                 artifacts=[str(manifest_path)],
+                canary_percentage=inp.canary_percentage,
             )
 
         except Exception as exc:

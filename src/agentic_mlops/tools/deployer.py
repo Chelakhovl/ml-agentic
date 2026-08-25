@@ -200,6 +200,7 @@ class ModelDeployer:
             "deployed_at": deployed_at,
             "rollback_plan": inp.rollback_plan,
             "smoke_test_results": smoke_checks,
+            "canary_percentage": inp.canary_percentage,
         }
         manifest_path = release_dir / "deployment_manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
@@ -213,6 +214,7 @@ class ModelDeployer:
                     "target": str(inp.target),
                     "exported_model_path": str(exported_path),
                     "deployed_at": deployed_at,
+                    "canary_percentage": inp.canary_percentage,
                 },
                 indent=2,
             ),
@@ -235,6 +237,7 @@ class ModelDeployer:
             release=release,
             smoke_test_results=smoke_checks,
             artifacts=[str(manifest_path)],
+            canary_percentage=inp.canary_percentage,
         )
 
     # ── Docker / AKS ──────────────────────────────────────────────────────────
@@ -334,6 +337,7 @@ class ModelDeployer:
             "rollback_plan": inp.rollback_plan,
             "scoring_uri": scoring_uri,
             "k8s_deployment_name": k8s_deployment_name,
+            "canary_percentage": inp.canary_percentage,
         }
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = artifacts_dir / "docker_deployment_manifest.json"
@@ -354,6 +358,7 @@ class ModelDeployer:
             image_tag=image_tag,
             k8s_deployment_name=k8s_deployment_name,
             artifacts=[str(manifest_path)],
+            canary_percentage=inp.canary_percentage,
         )
 
     def _check_production_gate(self, inp: DeploymentInput) -> DeploymentOutput | None:
