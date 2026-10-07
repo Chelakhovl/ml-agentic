@@ -20,10 +20,9 @@ from agentic_mlops.contracts.evaluation import (
     EvaluationMode,
 )
 from agentic_mlops.contracts.monitoring import MonitoringInput, MonitoringThresholds
-from agentic_mlops.contracts.orchestrator import OrchestratorInput, PIPELINE_STEPS
+from agentic_mlops.contracts.orchestrator import PIPELINE_STEPS, OrchestratorInput
 from agentic_mlops.contracts.training import TrainingConfig, TrainingInput, TrainingMode
 from agentic_mlops.workflows.policies import PolicyThresholds, PromotionPolicy
-
 
 # ── TrainingConfig boundary values ────────────────────────────────────────────
 
@@ -405,7 +404,9 @@ class TestSerializationRoundTrips:
 class TestEvaluatePolicyEdgeCases:
     def test_all_zeros_fails_all(self):
         from agentic_mlops.contracts.evaluation import EvaluationRecommendation  # noqa: PLC0415
-        from agentic_mlops.workflows.policies import evaluate_metrics_against_policy  # noqa: PLC0415
+        from agentic_mlops.workflows.policies import (
+            evaluate_metrics_against_policy,  # noqa: PLC0415
+        )
 
         policy = PromotionPolicy()
         metrics = EvaluationMetrics(map50=0.0, map50_95=0.0, precision=0.0, recall=0.0)
@@ -415,7 +416,9 @@ class TestEvaluatePolicyEdgeCases:
 
     def test_all_ones_passes_all(self):
         from agentic_mlops.contracts.evaluation import EvaluationRecommendation  # noqa: PLC0415
-        from agentic_mlops.workflows.policies import evaluate_metrics_against_policy  # noqa: PLC0415
+        from agentic_mlops.workflows.policies import (
+            evaluate_metrics_against_policy,  # noqa: PLC0415
+        )
 
         policy = PromotionPolicy()
         metrics = EvaluationMetrics(map50=1.0, map50_95=1.0, precision=1.0, recall=1.0)
@@ -425,7 +428,9 @@ class TestEvaluatePolicyEdgeCases:
 
     def test_missing_critical_class_triggers_label_review(self):
         from agentic_mlops.contracts.evaluation import EvaluationRecommendation  # noqa: PLC0415
-        from agentic_mlops.workflows.policies import evaluate_metrics_against_policy  # noqa: PLC0415
+        from agentic_mlops.workflows.policies import (
+            evaluate_metrics_against_policy,  # noqa: PLC0415
+        )
 
         policy = PromotionPolicy(critical_classes=["crack"])
         metrics = EvaluationMetrics(map50=1.0, map50_95=1.0, precision=1.0, recall=1.0)
@@ -435,7 +440,9 @@ class TestEvaluatePolicyEdgeCases:
 
     def test_only_recall_fails_collect_more_data(self):
         from agentic_mlops.contracts.evaluation import EvaluationRecommendation  # noqa: PLC0415
-        from agentic_mlops.workflows.policies import evaluate_metrics_against_policy  # noqa: PLC0415
+        from agentic_mlops.workflows.policies import (
+            evaluate_metrics_against_policy,  # noqa: PLC0415
+        )
 
         policy = PromotionPolicy(thresholds=PolicyThresholds(recall_min=0.95))
         metrics = EvaluationMetrics(map50=0.90, map50_95=0.80, precision=0.85, recall=0.60)
@@ -444,7 +451,9 @@ class TestEvaluatePolicyEdgeCases:
 
     def test_only_precision_fails_review_labels(self):
         from agentic_mlops.contracts.evaluation import EvaluationRecommendation  # noqa: PLC0415
-        from agentic_mlops.workflows.policies import evaluate_metrics_against_policy  # noqa: PLC0415
+        from agentic_mlops.workflows.policies import (
+            evaluate_metrics_against_policy,  # noqa: PLC0415
+        )
 
         policy = PromotionPolicy(thresholds=PolicyThresholds(precision_min=0.95))
         metrics = EvaluationMetrics(map50=0.90, map50_95=0.80, precision=0.60, recall=0.85)

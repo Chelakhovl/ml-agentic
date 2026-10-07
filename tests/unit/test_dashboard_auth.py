@@ -7,7 +7,6 @@ import base64
 import pytest
 from fastapi.testclient import TestClient
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -230,7 +229,6 @@ class TestServeCliFlags:
         assert "require-auth" in (result.output or "").lower() or result.exit_code == 1
 
     def test_api_key_envvar_accepted(self):
-        import os  # noqa: PLC0415
 
         from typer.testing import CliRunner  # noqa: PLC0415
 

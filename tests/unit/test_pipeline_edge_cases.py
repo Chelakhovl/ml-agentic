@@ -37,7 +37,6 @@ from agentic_mlops.tools.monitor import (
 )
 from agentic_mlops.workflows.policies import PromotionPolicy, evaluate_metrics_against_policy
 
-
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 
@@ -556,11 +555,11 @@ class TestPseudoLabelerBucketBehaviour:
     """
 
     def test_bucket_for_no_predictions_returns_medium(self):
-        from agentic_mlops.tools.monitor import _percentile  # noqa: PLC0415, F401
         from agentic_mlops.contracts.annotation import ConfidenceThresholds  # noqa: PLC0415
 
         # Use OnnxOnlyModelRunner's helper (same logic as PseudoLabeler)
         from agentic_mlops.tools.model_runner import _bucket_for_confs  # noqa: PLC0415
+        from agentic_mlops.tools.monitor import _percentile  # noqa: PLC0415, F401
 
         th = ConfidenceThresholds(auto_candidate=0.90, human_review=0.50)
         bucket, mean_conf, min_conf = _bucket_for_confs([], th)
@@ -569,8 +568,8 @@ class TestPseudoLabelerBucketBehaviour:
         assert min_conf is None
 
     def test_bucket_for_all_high_confidence(self):
-        from agentic_mlops.tools.model_runner import _bucket_for_confs  # noqa: PLC0415
         from agentic_mlops.contracts.annotation import ConfidenceThresholds  # noqa: PLC0415
+        from agentic_mlops.tools.model_runner import _bucket_for_confs  # noqa: PLC0415
 
         th = ConfidenceThresholds(auto_candidate=0.90, human_review=0.50)
         preds = [(0, 0.5, 0.5, 0.2, 0.2, 0.95)]
@@ -578,8 +577,8 @@ class TestPseudoLabelerBucketBehaviour:
         assert bucket == "high"
 
     def test_bucket_for_mixed_confidence_gives_medium(self):
-        from agentic_mlops.tools.model_runner import _bucket_for_confs  # noqa: PLC0415
         from agentic_mlops.contracts.annotation import ConfidenceThresholds  # noqa: PLC0415
+        from agentic_mlops.tools.model_runner import _bucket_for_confs  # noqa: PLC0415
 
         th = ConfidenceThresholds(auto_candidate=0.90, human_review=0.50)
         # min_conf = 0.60 which is >= human_review (0.50) but < auto_candidate (0.90)
@@ -593,8 +592,8 @@ class TestPseudoLabelerBucketBehaviour:
         PseudoLabeler itself never reaches here because YOLO filters first.
         OnnxOnlyModelRunner also pre-filters via conf_threshold=human_review.
         """
-        from agentic_mlops.tools.model_runner import _bucket_for_confs  # noqa: PLC0415
         from agentic_mlops.contracts.annotation import ConfidenceThresholds  # noqa: PLC0415
+        from agentic_mlops.tools.model_runner import _bucket_for_confs  # noqa: PLC0415
 
         th = ConfidenceThresholds(auto_candidate=0.90, human_review=0.50)
         # Provide prediction with conf=0.30, below human_review — "low" bucket

@@ -108,7 +108,6 @@ from agentic_mlops.integrations.model_registry import (
 from agentic_mlops.integrations.notification_client import NotificationClientBase
 from agentic_mlops.integrations.workflow_state_store import (
     AzureBlobStateBackend,
-    LocalStateBackend,
     StateBackend,
     WorkflowLockError,
     WorkflowStateStore,

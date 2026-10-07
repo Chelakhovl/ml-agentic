@@ -392,11 +392,12 @@ def _make_stub_agent(success: bool = True, msg: str = "ok") -> type:
             self._dir = artifacts_dir
 
         def run(self, inp: Any) -> Any:
+            from agentic_mlops.contracts.validation import DatasetValidationOutput
+
             from agentic_mlops.contracts.approvals import ApprovalAction, ApprovalOutput
             from agentic_mlops.contracts.evaluation import EvaluationOutput
             from agentic_mlops.contracts.model_registry import ModelRegistrationOutput
             from agentic_mlops.contracts.training import TrainingOutput
-            from agentic_mlops.contracts.validation import DatasetValidationOutput
 
             # Return a plausible stub for every type of agent that MVPWorkflow calls.
             name = type(inp).__name__

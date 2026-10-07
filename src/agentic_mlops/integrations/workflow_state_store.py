@@ -42,9 +42,10 @@ import json
 import os
 import sys
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from agentic_mlops.observability.logging import get_logger
 

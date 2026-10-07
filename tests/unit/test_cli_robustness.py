@@ -332,7 +332,6 @@ class TestRunWorkflowCommand:
 
     def test_duplicate_workflow_id_without_resume_exits_1(self, tmp_path: Path):
         """Running the same workflow ID twice without --resume should fail."""
-        import os  # noqa: PLC0415
 
         runs = tmp_path / "runs"
         wf_dir = runs / "wf_dup"
