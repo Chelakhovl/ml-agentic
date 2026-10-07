@@ -28,7 +28,7 @@ jobs:
           cache: "pip"
 
       - name: Install dev dependencies
-        run: pip install -e ".[dev]" --quiet
+        run: pip install -e ".[dev,vision,web]" --quiet
 
       - name: Lint
         run: ruff check src tests
