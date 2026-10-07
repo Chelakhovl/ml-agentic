@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json as _json_mod
 from pathlib import Path
 
 import typer
 
-from .._shared import _print_model_decision_result, console
+from .._shared import OutputFormat, _print_model_decision_result, console
 
 
 def model_decision(
@@ -47,6 +48,9 @@ def model_decision(
         "--output-dir",
         help="Where to save the decision report (default: <evaluation_report dir>/decision_out)",
     ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
+    ),
 ) -> None:
     """Turn an evaluation report into an explainable promote/reject/retrain decision."""
     from agentic_mlops.agents.model_decision import ModelDecisionAgent  # noqa: PLC0415
@@ -84,7 +88,10 @@ def model_decision(
         )
     )
 
-    _print_model_decision_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_model_decision_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)
@@ -127,6 +134,9 @@ def doctor(
         "--no-tools",
         help="Skip external CLI tool checks (docker, az)",
     ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
+    ),
 ) -> None:
     """Run a local self-check — verify dependencies, configs, and directory access.
 
@@ -157,6 +167,12 @@ def doctor(
         check_docker=not no_tools,
         check_az=not no_tools,
     )
+
+    if format == OutputFormat.json:
+        print(report.model_dump_json(indent=2))
+        if report.overall_status == CheckStatus.ERROR:
+            raise typer.Exit(code=1)
+        return
 
     # ── Print results ──────────────────────────────────────────────────────────
     _STATUS_ICON = {
@@ -208,6 +224,9 @@ def status(
         "outputs/dataset_registry", "--dataset-registry-dir", help="Dataset registry root"
     ),
     limit: int = typer.Option(5, "--limit", "-n", help="Max recent workflows to show"),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
+    ),
 ) -> None:
     """Show a quick health snapshot: workflows, models, datasets, monitoring alerts."""
     from agentic_mlops.web import reader  # noqa: PLC0415
@@ -215,6 +234,37 @@ def status(
     _rd = Path(runs_dir)
     _mod = Path(registry_dir)
     _ds = Path(dataset_registry_dir)
+
+    if format == OutputFormat.json:
+        workflows = reader.list_workflows(_rd)
+        models = reader.list_models(_mod)
+        datasets = reader.list_datasets(_ds)
+        mon_reports = reader.list_monitoring_reports(_rd)
+        active_alerts = [
+            r for r in mon_reports if r.get("recommended_action", "no_action") != "no_action"
+        ]
+        pending = [w for w in workflows if w.get("status") == "pending_approval"]
+        print(
+            _json_mod.dumps(
+                {
+                    "workflows": {
+                        "total": len(workflows),
+                        "pending_approval": len(pending),
+                        "recent": workflows[:limit],
+                    },
+                    "models": {"total": len(models), "latest": models[:3]},
+                    "datasets": {"total": len(datasets), "latest": datasets[:3]},
+                    "monitoring": {
+                        "total_reports": len(mon_reports),
+                        "active_alerts": len(active_alerts),
+                        "alerts": active_alerts[:3],
+                    },
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        return
 
     _WF_ICON = {
         "completed": "[green]✓[/green]",
@@ -359,14 +409,36 @@ def show_state(
         "--audit-lines",
         help="Number of recent audit events to show with --audit.",
     ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
+    ),
 ) -> None:
     """Show the detailed state of a workflow run (step table, artifacts, approval info).
 
     Without WORKFLOW_ID, lists all workflow IDs found under --runs-dir.
     """
+    import dataclasses  # noqa: PLC0415
+
     from agentic_mlops.tools.state_inspector import WorkflowStateInspector  # noqa: PLC0415
 
     inspector = WorkflowStateInspector()
+
+    if format == OutputFormat.json:
+        if workflow_id is None:
+            ids = inspector.list_workflows(runs_dir)
+            print(_json_mod.dumps({"workflow_ids": ids}, indent=2))
+        else:
+            snap = inspector.inspect(runs_dir, workflow_id, max_audit_events=audit_lines)
+            if snap is None:
+                console.print(
+                    f"[red]No state file found for workflow '{workflow_id}' in {runs_dir}.[/red]"
+                )
+                raise typer.Exit(code=1)
+            snap_dict = dataclasses.asdict(snap)
+            snap_dict["state_path"] = str(snap_dict["state_path"])
+            snap_dict["audit_log_path"] = str(snap_dict["audit_log_path"])
+            print(_json_mod.dumps(snap_dict, indent=2, default=str))
+        return
 
     if workflow_id is None:
         ids = inspector.list_workflows(runs_dir)
@@ -472,8 +544,13 @@ def diff_runs(
     wf_id_a: str = typer.Argument(..., help="First (baseline) workflow ID"),
     wf_id_b: str = typer.Argument(..., help="Second (target) workflow ID"),
     runs_dir: str = typer.Option("runs", "--runs-dir", help="Workflow runs directory"),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
+    ),
 ) -> None:
     """Compare two workflow runs: step outcomes and evaluation metrics."""
+    import dataclasses as _dc  # noqa: PLC0415
+
     from agentic_mlops.tools.run_diff import WorkflowRunDiffer
 
     diff = WorkflowRunDiffer().diff(runs_dir, wf_id_a, wf_id_b)
@@ -488,6 +565,12 @@ def diff_runs(
             missing.append(wf_id_b)
         console.print(f"[red]Workflow(s) not found:[/red] {', '.join(missing)}")
         raise typer.Exit(1)
+
+    if format == OutputFormat.json:
+        diff_dict = _dc.asdict(diff)
+        diff_dict["has_changes"] = diff.has_changes
+        print(_json_mod.dumps(diff_dict, indent=2, default=str))
+        return
 
     _STATUS_COLOUR = {
         "completed": "green",
@@ -752,6 +835,85 @@ def lint_config(
         raise typer.Exit(code=1)
 
 
+def lint_docs(
+    docs_dir: str = typer.Argument(
+        "agentic_mlops_workflow_docs",
+        help="Root of the spec docs directory (contains agents/ and docs/ subdirs)",
+    ),
+    src_dir: str = typer.Option(
+        "src",
+        "--src-dir",
+        help="Python source root (must contain agentic_mlops/ package)",
+    ),
+    claude_md: str = typer.Option(
+        None,
+        "--claude-md",
+        help="Path to CLAUDE.md for cross-reference checks (skipped when not provided)",
+    ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Exit with code 1 even when the only issues are warnings (no errors).",
+    ),
+) -> None:
+    """Lint spec docs — check living-spec headers, Python paths, class names, and CLAUDE.md sync.
+
+    Checks:
+      header      — every spec file in agents/ and docs/ carries a living-spec banner
+      paths       — Python file paths referenced in specs exist under src/agentic_mlops/
+      classes     — agent/tool class names referenced in specs exist in Python source
+      claude_sync — each agent spec (01-12) is mentioned in CLAUDE.md
+
+    Exit codes: 0 = ok (or warnings-only without --strict); 1 = errors present
+    (or warnings with --strict).
+    """
+    from agentic_mlops.contracts.doctor import CheckStatus  # noqa: PLC0415
+    from agentic_mlops.tools.docs_linter import DocsLinter  # noqa: PLC0415
+
+    report = DocsLinter().lint(
+        docs_dir=docs_dir,
+        src_dir=src_dir,
+        claude_md_path=claude_md,
+        strict=strict,
+    )
+
+    _STATUS_ICON = {
+        CheckStatus.OK: "[green]✓[/green]",
+        CheckStatus.WARNING: "[yellow]⚠[/yellow]",
+        CheckStatus.ERROR: "[red]✗[/red]",
+    }
+
+    console.print(f"\n[bold]agentic-mlops lint-docs[/bold]  {docs_dir}\n")
+
+    current_cat = ""
+    for chk in report.checks:
+        if chk.category != current_cat:
+            current_cat = chk.category
+            console.print(f"  [bold]{chk.category}[/bold]")
+        icon = _STATUS_ICON[chk.status]
+        console.print(f"    {icon}  {chk.message}")
+        if chk.detail:
+            first_lines = chk.detail.split("\n")[:5]
+            for line in first_lines:
+                console.print(f"         [dim]{line}[/dim]")
+
+    console.print()
+    ok_s = f"[green]{report.num_ok} ok[/green]"
+    warn_s = f"[yellow]{report.num_warnings} warnings[/yellow]"
+    err_s = f"[red]{report.num_errors} errors[/red]"
+    console.print(f"  Summary: {ok_s}  {warn_s}  {err_s}")
+
+    if report.overall_status == CheckStatus.OK:
+        console.print("  [green bold]All spec docs are in sync.[/green bold]\n")
+    elif report.overall_status == CheckStatus.WARNING:
+        console.print("  [yellow]Spec docs have warnings — review above.[/yellow]\n")
+        if strict:
+            raise typer.Exit(code=1)
+    else:
+        console.print("  [red bold]Spec docs have errors.[/red bold]\n")
+        raise typer.Exit(code=1)
+
+
 def cost_report(
     workflow_id: str = typer.Argument(..., help="Workflow ID to generate a cost report for"),
     runs_dir: str = typer.Option(
@@ -769,6 +931,9 @@ def cost_report(
         None,
         "--output-file",
         help="Write cost_summary.json to this path instead of the workflow artifacts dir.",
+    ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
     ),
 ) -> None:
     """Estimate the compute cost of a completed workflow run.
@@ -834,6 +999,10 @@ def cost_report(
         out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(_json.dumps(summary.model_dump(), indent=2), encoding="utf-8")
 
+    if format == OutputFormat.json:
+        print(_json.dumps(summary.model_dump(), indent=2))
+        return
+
     # Print table
     console.print(f"\n[bold]Cost Report — Workflow:[/bold] {workflow_id}")
     console.print(f"  Currency : {summary.currency}")
@@ -850,3 +1019,201 @@ def cost_report(
         f"\n  [bold]Total estimated cost:[/bold] {summary.total_cost:.4f} {summary.currency}"
     )
     console.print(f"\n  Report written to: {out_path}")
+
+
+def diff_configs(
+    config_a: str = typer.Argument(..., help="First orchestrator YAML config"),
+    config_b: str = typer.Argument(..., help="Second orchestrator YAML config"),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
+    ),
+) -> None:
+    """Compare two orchestrator YAML configs and show added, removed, and changed keys.
+
+    Keys that differ between the two files are shown with their old and new values.
+    Exit codes: 0 = configs are identical; 1 = configs differ; 2 = a file could not be loaded.
+    """
+    import yaml as _yaml  # noqa: PLC0415
+
+    def _load(path: str) -> dict:
+        try:
+            return _yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            console.print(f"[red]Cannot load config:[/red] {path}: {exc}")
+            raise typer.Exit(code=2) from exc
+
+    def _flatten(obj: object, prefix: str = "") -> dict:
+        result: dict = {}
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                full = f"{prefix}.{key}" if prefix else str(key)
+                result.update(_flatten(value, full))
+        elif isinstance(obj, list):
+            for idx, item in enumerate(obj):
+                full = f"{prefix}[{idx}]"
+                result.update(_flatten(item, full))
+        else:
+            result[prefix] = obj
+        return result
+
+    flat_a = _flatten(_load(config_a))
+    flat_b = _flatten(_load(config_b))
+
+    keys_a = set(flat_a)
+    keys_b = set(flat_b)
+
+    removed = sorted(keys_a - keys_b)
+    added = sorted(keys_b - keys_a)
+    changed = sorted(k for k in keys_a & keys_b if flat_a[k] != flat_b[k])
+
+    if format == OutputFormat.json:
+        print(
+            _json_mod.dumps(
+                {
+                    "config_a": config_a,
+                    "config_b": config_b,
+                    "added": {k: flat_b[k] for k in added},
+                    "removed": {k: flat_a[k] for k in removed},
+                    "changed": {k: {"from": flat_a[k], "to": flat_b[k]} for k in changed},
+                    "identical": not (added or removed or changed),
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        if added or removed or changed:
+            raise typer.Exit(code=1)
+        return
+
+    console.print("\n[bold]agentic-mlops diff-configs[/bold]")
+    console.print(f"  A: {config_a}")
+    console.print(f"  B: {config_b}\n")
+
+    if not (added or removed or changed):
+        console.print("[green]Configs are identical.[/green]\n")
+        return
+
+    if removed:
+        console.print("[bold red]Removed[/bold red] (in A, not in B):")
+        for k in removed:
+            console.print(f"  [red]-[/red] {k}: {flat_a[k]!r}")
+        console.print()
+
+    if added:
+        console.print("[bold green]Added[/bold green] (in B, not in A):")
+        for k in added:
+            console.print(f"  [green]+[/green] {k}: {flat_b[k]!r}")
+        console.print()
+
+    if changed:
+        console.print("[bold yellow]Changed[/bold yellow]:")
+        for k in changed:
+            console.print(f"  [yellow]~[/yellow] {k}")
+            console.print(f"      A: {flat_a[k]!r}")
+            console.print(f"      B: {flat_b[k]!r}")
+        console.print()
+
+    total = len(added) + len(removed) + len(changed)
+    console.print(
+        f"  [green]{len(added)} added[/green]  "
+        f"[red]{len(removed)} removed[/red]  "
+        f"[yellow]{len(changed)} changed[/yellow]  "
+        f"({total} total differences)\n"
+    )
+    raise typer.Exit(code=1)
+
+
+def init(
+    output_dir: str = typer.Argument(
+        "configs",
+        help="Directory to write starter configs into (created if missing)",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite existing files",
+    ),
+) -> None:
+    """Scaffold starter config files into OUTPUT_DIR.
+
+    Copies training.example.yaml, promotion_policy.example.yaml,
+    orchestrator.example.yaml, mlflow.example.yaml, and azure_ml.example.yaml
+    from the installed package configs/ directory into OUTPUT_DIR, stripping
+    the '.example' suffix so they are ready to edit.
+    """
+    import shutil  # noqa: PLC0415
+
+    EXAMPLES = [
+        "training.example.yaml",
+        "promotion_policy.example.yaml",
+        "orchestrator.example.yaml",
+        "mlflow.example.yaml",
+        "azure_ml.example.yaml",
+    ]
+
+    # Resolve the package's own configs/ directory (works for editable installs)
+    pkg_configs = Path(__file__).parent.parent.parent.parent.parent / "configs"
+    if not pkg_configs.is_dir():
+        console.print(
+            "[red]Cannot locate built-in configs/ directory "
+            "— is the package installed correctly?[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    written: list[str] = []
+    skipped: list[str] = []
+
+    for example_name in EXAMPLES:
+        dest_name = example_name.replace(".example", "")
+        dest = out / dest_name
+        src = pkg_configs / example_name
+
+        if dest.exists() and not force:
+            skipped.append(dest_name)
+            continue
+
+        if src.exists():
+            shutil.copy2(src, dest)
+            written.append(dest_name)
+        else:
+            console.print(f"[yellow]Source not found, skipping: {example_name}[/yellow]")
+
+    if written:
+        console.print(f"\n[bold green]Scaffolded {len(written)} config(s) into {out}/[/bold green]")
+        for name in written:
+            console.print(f"  [green]+[/green] {name}")
+    if skipped:
+        console.print(
+            f"\n[yellow]{len(skipped)} file(s) already exist (use --force to overwrite):[/yellow]"
+        )
+        for name in skipped:
+            console.print(f"  [dim]{name}[/dim]")
+    if not written and not skipped:
+        console.print("[red]No example configs found.[/red]")
+        raise typer.Exit(code=1)
+
+    # Create standard project directories next to the configs dir
+    project_root = Path(output_dir).parent
+    std_dirs = [
+        project_root / "runs",
+        project_root / "outputs" / "model_registry",
+        project_root / "outputs" / "dataset_registry",
+    ]
+    created_dirs: list[Path] = []
+    for d in std_dirs:
+        if not d.exists():
+            d.mkdir(parents=True, exist_ok=True)
+            created_dirs.append(d)
+    if created_dirs:
+        console.print("\n[dim]Created standard directories:[/dim]")
+        for d in created_dirs:
+            console.print(f"  [dim]+[/dim] {d}/")
+
+    if written:
+        console.print(
+            f"\n[dim]Edit the files in [bold]{out}/[/bold]"
+            " before running agentic-mlops run-workflow.[/dim]"
+        )

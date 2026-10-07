@@ -110,6 +110,44 @@ Each run writes `runs/<workflow_id>/state.json` (resumable snapshot) and
 `runs/<workflow_id>/audit_log.jsonl` (append-only event log). Pausing at an H4/H5 gate
 leaves the run open — re-run with `--resume` once the decision JSON exists on disk.
 
+**Resume and rewind:**
+
+```bash
+# Resume from where it paused (e.g. after H4/H5 approval):
+agentic-mlops run-workflow --workflow-id wf_001 --config configs/orchestrator.yaml --resume
+
+# Rewind to a specific step and re-run from there (prior step outputs are preserved):
+agentic-mlops run-workflow --workflow-id wf_001 --config configs/orchestrator.yaml \
+  --resume-from-step evaluation
+```
+
+**Notifications — configure in `configs/orchestrator.yaml`:**
+
+```yaml
+notifications:
+  teams_webhook_url: https://...   # Teams MessageCard with interactive approval buttons
+  slack_webhook_url: https://...   # Slack attachment with approve/reject buttons
+  email_to: team@example.com       # SMTP — no extra packages (stdlib smtplib)
+  smtp_host: smtp.example.com
+  notify_on: [step_failed, workflow_completed, workflow_failed]
+```
+
+**GitHub Actions auto-deploy on completion:**
+
+```yaml
+github_actions:
+  repo: your-org/your-repo
+  workflow_file: mlops-deploy.yml
+  # GITHUB_ACTIONS_TOKEN env var (PAT with actions:write)
+```
+
+**Azure ML state backend (horizontal scaling):**
+
+```bash
+agentic-mlops run-workflow --workflow-id wf_001 --config configs/orchestrator.yaml \
+  --state-backend azure_blob --azure-config configs/azure_ml.yaml
+```
+
 ---
 
 ## Extras / Optional Dependencies
@@ -121,11 +159,15 @@ leaves the run open — re-run with `--resume` once the decision JSON exists on 
 | `azure` | `azure-ai-ml`, `azure-identity`, `azure-monitor-query` | Any `--runner azure-ml`, `--backend azure_ml`, App Insights log ingestion |
 | `vision` | `Pillow` | Real image corruption detection in `DataIntakeAgent` (falls back to non-zero-size check without it) |
 | `web` | `fastapi`, `uvicorn`, `jinja2` | `agentic-mlops serve` web dashboard |
+| `auth` | `python-jose[cryptography]`, `httpx` | OIDC/JWT + API-key authentication for the web dashboard |
 
 Install multiple extras together:
 
 ```bash
 pip install -e ".[dev,azure,web]"
+
+# Everything at once:
+pip install -e ".[dev,mlflow,azure,vision,web,auth]"
 ```
 
 ---
@@ -170,6 +212,7 @@ examples and every runner/backend option.
 | `agentic-mlops deploy-model --model-name foo --backend azure_ml --azure-config configs/azure_ml.yaml` | Deploy to a real Azure ML Managed Online Endpoint |
 | `agentic-mlops deploy-model <model.pt> --model-name foo --backend docker --docker-config configs/docker.yaml` | Build a Docker image and push to a registry |
 | `agentic-mlops deploy-model <model.pt> --model-name foo --backend aks --docker-config ... --aks-config ...` | Deploy to AKS via `kubectl apply` |
+| `agentic-mlops deploy-model ... --canary-percentage 20` | Canary rollout — send 20% traffic to new deployment, 80% to incumbent (Azure ML backend) |
 | `agentic-mlops monitor <predictions.jsonl> --endpoint-name foo` | Analyze inference logs for drift, latency, error rate; writes `hard_samples_manifest.json` |
 | `agentic-mlops ingest-hard-samples <manifest.json> --images-source-dir ... --dataset-name foo` | Stage hard samples and run data intake over them |
 | `agentic-mlops compare-models eval_a.json eval_b.json --model-names a,b` | Rank and compare multiple evaluation reports |
@@ -199,6 +242,150 @@ examples and every runner/backend option.
 | `agentic-mlops prune-runs --keep-last 10` | Delete old workflow run directories |
 | `agentic-mlops tag-run wf_001 env=prod model=yolov8n` | Add, remove, or display tags on a workflow run |
 | `agentic-mlops lint-config configs/orchestrator.yaml` | Validate an orchestrator YAML without running anything |
+| `agentic-mlops lint-docs agentic_mlops_workflow_docs --src-dir src` | Check spec docs have living-spec headers and reference valid Python paths/classes |
+| `agentic-mlops watch wf_001` | Tail a workflow's audit log live (Ctrl-C to stop; exits 0=completed, 1=failed) |
+
+---
+
+## Operations & Observability
+
+Utility commands for inspecting, managing, and troubleshooting workflow runs.
+All run-inspection commands default to `--runs-dir runs`.
+
+### System health
+
+```bash
+# Check packages, config files, directories, and optional tools (docker, az CLI)
+agentic-mlops doctor
+
+# Include orchestrator + Azure config validation
+agentic-mlops doctor --config configs/orchestrator.yaml --azure-config configs/azure_ml.yaml
+
+# Skip docker/az CLI binary checks
+agentic-mlops doctor --no-tools
+
+# Quick system-wide snapshot: active workflows, registered models, datasets, alerts
+agentic-mlops status
+agentic-mlops status --runs-dir runs --registry-dir outputs/model_registry --limit 10
+```
+
+### Inspecting a single run
+
+```bash
+# Drill-down view of state and all step outputs
+agentic-mlops show-state wf_001
+
+# Include the last 20 lines of the audit log
+agentic-mlops show-state wf_001 --audit --audit-lines 20
+```
+
+### Watching live
+
+```bash
+# Tail the audit log in real time (Ctrl-C to stop)
+# Exit codes: 0 = completed, 1 = failed, 2 = not found
+agentic-mlops watch wf_001
+agentic-mlops watch wf_001 --runs-dir runs --interval 0.5
+
+# Keep tailing after the workflow reaches a terminal state
+agentic-mlops watch wf_001 --follow
+```
+
+### Comparing runs
+
+```bash
+# Side-by-side metrics and step-status comparison
+agentic-mlops diff-runs wf_001 wf_002
+
+# Rank and compare multiple evaluation reports; write results to a directory
+agentic-mlops compare-models \
+  ./runs/eval_a/evaluation_report.json \
+  ./runs/eval_b/evaluation_report.json \
+  --model-names model_a,model_b \
+  --output-dir ./runs/comparison
+```
+
+### Tagging runs
+
+```bash
+# Add tags
+agentic-mlops tag-run wf_001 env=prod model=yolov8n
+
+# Remove a tag
+agentic-mlops tag-run wf_001 --remove env
+
+# Display current tags (no arguments beyond the run id)
+agentic-mlops tag-run wf_001
+```
+
+### Cost reporting
+
+```bash
+# Estimate per-step USD compute costs for a run
+agentic-mlops cost-report wf_001 --runs-dir runs
+
+# With a custom pricing config; write a JSON cost file
+agentic-mlops cost-report wf_001 --pricing-config configs/pricing.yaml --output-file cost.json
+```
+
+### Config linting
+
+```bash
+# Validate an orchestrator YAML without running anything
+agentic-mlops lint-config configs/orchestrator.yaml
+
+# Strict mode — treat warnings as errors
+agentic-mlops lint-config configs/orchestrator.yaml --strict
+```
+
+### Run housekeeping
+
+```bash
+# Keep only the 10 most recent runs; delete the rest
+agentic-mlops prune-runs --keep-last 10 --runs-dir runs
+
+# Dry-run: show which runs older than 30 days with a failed status would be deleted
+agentic-mlops prune-runs --older-than-days 30 --status failed --dry-run
+```
+
+---
+
+## Deployment Backends
+
+`deploy-model` supports four backends. The `local` (default) and `azure_ml` backends are
+described in the [Deployment](#deployment) CLI section. The two container backends are:
+
+### Docker
+
+Build a Docker image containing the model and push it to a registry:
+
+```bash
+cp configs/docker.example.yaml configs/docker.yaml
+# Edit: image_name, registry, base_image, etc.
+
+agentic-mlops deploy-model outputs/model_registry/my-model/versions/1/model/best.pt \
+  --model-name my-model \
+  --backend docker \
+  --docker-config configs/docker.yaml
+```
+
+### AKS
+
+Deploy to an Azure Kubernetes Service cluster via `kubectl apply` (requires Docker build first):
+
+```bash
+cp configs/aks.example.yaml configs/aks.yaml
+# Edit: namespace, replicas, resource limits, etc.
+
+agentic-mlops deploy-model outputs/model_registry/my-model/versions/1/model/best.pt \
+  --model-name my-model \
+  --backend aks \
+  --docker-config configs/docker.yaml \
+  --aks-config configs/aks.yaml
+```
+
+Both backends are also available as `deployment_backend: docker` / `deployment_backend: aks`
+in `configs/orchestrator.yaml` for fully automated pipelines via `run-workflow`.
 
 ---
 
@@ -246,21 +433,41 @@ pip install -e ".[dev,web]"
 agentic-mlops serve --port 8000 --runs-dir runs \
   --registry-dir outputs/model_registry \
   --dataset-registry-dir outputs/dataset_registry
+```
 
-# Optional HTTP basic auth:
+**Authentication** (three independent layers, any combination):
+
+```bash
+# HTTP Basic Auth (no extra package):
 DASHBOARD_PASSWORD=secret agentic-mlops serve --user admin --port 8000
+
+# API key (Authorization: Bearer <token> or X-API-Key: <token>):
+pip install -e ".[dev,web,auth]"
+agentic-mlops serve --api-key my-secret-token --port 8000
+# or via env var: DASHBOARD_API_KEY=my-secret-token
+
+# OIDC / OAuth2 JWT (RS256/ES256, JWKS fetched at startup):
+agentic-mlops serve \
+  --oidc-issuer https://login.microsoftonline.com/<tenant>/v2.0 \
+  --oidc-client-id <app-id> --port 8000
+# env vars: DASHBOARD_OIDC_ISSUER, DASHBOARD_OIDC_CLIENT_ID
+
+# Fail-fast if no auth method configured (recommended for production):
+agentic-mlops serve --require-auth --api-key my-secret-token --port 8000
 ```
 
 Dashboard features:
 - Workflow list with live SSE status updates
 - Per-workflow step accordion: inputs, outputs, artifacts, audit log
-- Inline H4/H5 approval forms (no CLI needed)
+- Inline H4/H5 approval forms — submitting writes the decision and triggers `--resume` automatically
+- Teams/Slack interactive approval buttons (when webhook + signing secret configured)
 - Model registry browser with promotion lineage
-- Dataset registry browser
-- Model comparison page
+- Dataset registry browser with version diff and quality charts
+- Model comparison and ranked leaderboard pages
 - Per-workflow cost report
 - Hard sample viewer with ready-to-copy `ingest-hard-samples` command
-- Dark mode
+- Dark mode + mobile responsive layout
+- `/health` liveness probe, `/api/me` actor reflection, `/metrics` Prometheus endpoint
 
 ---
 
@@ -311,7 +518,7 @@ whenever hard samples are present in a run's monitoring report.
 
 ```bash
 # All unit tests (no Azure, no YOLO, no MLflow needed)
-pytest tests/unit -v                                               # ~1190 tests
+pytest tests/unit -v                                               # ~1400 tests
 
 # Single test file
 pytest tests/unit/test_dataset_validator.py -v
@@ -362,6 +569,16 @@ The full agent and architecture specs live in `agentic_mlops_workflow_docs/`:
 - `agents/` — 13 markdown specs (00 Orchestrator + 01–12 individual agents)
 - `docs/` — 14 architecture docs (state machine, MVP scope, data contracts, etc.)
 - `prompts/` — Claude Code prompts used to bootstrap the project
+
+**ML framework abstraction:**
+
+`tools/model_runner.py` provides a `ModelRunner` protocol and three implementations:
+- `YoloModelRunner` — full train + evaluate + predict via Ultralytics (default)
+- `OnnxOnlyModelRunner` — inference-only via `onnxruntime`; `train`/`evaluate` raise `NotImplementedError`
+- `TorchvisionModelRunner` — reserved stub for future PyTorch/TorchVision support
+
+`TrainingInput`, `EvaluationInput`, and `AnnotationInput` all carry a `framework: ModelFramework`
+field (default `"yolo"`). Use `create_model_runner(framework)` to get the right runner.
 
 **Design principles:**
 - Agents orchestrate and report; all ML computation is in deterministic, injected tools.

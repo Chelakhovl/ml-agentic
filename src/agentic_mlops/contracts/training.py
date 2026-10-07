@@ -9,7 +9,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, computed_field, field_validator
 
-from .common import ToolResult
+from .common import ModelFramework, ToolResult
 
 
 class TrainingMode(StrEnum):
@@ -88,6 +88,7 @@ class TrainingInput(BaseModel):
     workflow_id: str = "wf_local"
     # Populated from the output of DatasetValidationAgent
     dataset_validation_status: Literal["passed", "failed", "warning"] | None = None
+    framework: ModelFramework = ModelFramework.YOLO
 
 
 class TrainingOutput(ToolResult):

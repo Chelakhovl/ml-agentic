@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from agentic_mlops.tools.run_diff import WorkflowRunDiffer
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -389,3 +391,62 @@ class TestDiffRunsCLI:
         assert result.exit_code == 0
         assert "evaluation" in result.output
         assert "failed" in result.output
+
+
+class TestDiffRunsJsonFormat:
+    def _make_runs(self, tmp_path: Path) -> Path:
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        _write_state(
+            runs, "wf_x",
+            steps=["training", "evaluation"],
+            completed=["training", "evaluation"],
+            step_outputs={
+                "evaluation": {"map50": 0.80, "precision": 0.85, "recall": 0.75, "map50_95": 0.55}
+            },
+        )
+        _write_state(
+            runs, "wf_y",
+            steps=["training", "evaluation"],
+            completed=["training", "evaluation"],
+            step_outputs={
+                "evaluation": {"map50": 0.90, "precision": 0.88, "recall": 0.80, "map50_95": 0.60}
+            },
+        )
+        return runs
+
+    def test_json_output_valid(self, tmp_path):
+        import json
+
+        from typer.testing import CliRunner
+
+        from agentic_mlops.cli.main import app
+
+        runs = self._make_runs(tmp_path)
+        result = CliRunner().invoke(
+            app, ["diff-runs", "wf_x", "wf_y", "--runs-dir", str(runs), "--format", "json"]
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["wf_a"] == "wf_x"
+        assert data["wf_b"] == "wf_y"
+        assert "step_diffs" in data
+        assert "metric_diffs" in data
+        assert "has_changes" in data
+
+    def test_json_metric_diffs_present(self, tmp_path):
+        import json
+
+        from typer.testing import CliRunner
+
+        from agentic_mlops.cli.main import app
+
+        runs = self._make_runs(tmp_path)
+        result = CliRunner().invoke(
+            app, ["diff-runs", "wf_x", "wf_y", "--runs-dir", str(runs), "--format", "json"]
+        )
+        data = json.loads(result.output)
+        metrics = {m["metric"]: m for m in data["metric_diffs"]}
+        assert "evaluation.map50" in metrics
+        assert metrics["evaluation.map50"]["value_a"] == pytest.approx(0.80, abs=1e-4)
+        assert metrics["evaluation.map50"]["value_b"] == pytest.approx(0.90, abs=1e-4)

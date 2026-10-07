@@ -20,8 +20,24 @@ def is_safe_path_id(name: str) -> bool:
     or query params (see web/routes.py) and are joined onto runs_dir/registry_dir
     below — without this check a value like "../../etc" would escape the intended
     root for both reads and (via WorkflowStateStore, for workflow_id) writes.
+
+    Null bytes are rejected: on POSIX kernels ``open()`` truncates the path at
+    ``\x00``, so ``"wf\x00../../etc"`` would silently become ``"wf"`` and escape
+    the intended directory boundary. On Windows they cause an unhandled ValueError
+    propagating through the stack instead of a clean None return.
+
+    Newlines are rejected to prevent CRLF injection into log files: a workflow_id
+    containing ``\r\n`` would allow an attacker to forge new log lines.
     """
-    return bool(name) and "/" not in name and "\\" not in name and name not in (".", "..")
+    return (
+        bool(name)
+        and "/" not in name
+        and "\\" not in name
+        and name not in (".", "..")
+        and "\x00" not in name
+        and "\n" not in name
+        and "\r" not in name
+    )
 
 
 def list_workflows(runs_dir: Path) -> list[dict]:

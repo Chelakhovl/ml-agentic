@@ -6,7 +6,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, model_validator
 
-from .common import ToolResult
+from .common import ModelFramework, ToolResult
 
 
 class ConfidenceBucket(StrEnum):
@@ -33,7 +33,7 @@ class AnnotationInput(BaseModel):
     images_path: str
     model_path: str
     confidence_thresholds: ConfidenceThresholds = Field(default_factory=ConfidenceThresholds)
-    imgsz: int = 640
+    imgsz: int = Field(default=640, gt=0)
     device: str = "cpu"
 
     # Safety rule: pseudo-labels never overwrite existing human labels. When set,
@@ -41,6 +41,7 @@ class AnnotationInput(BaseModel):
     # skipped entirely (recorded, not re-predicted).
     existing_labels_path: str | None = None
     skip_existing_labels: bool = True
+    framework: ModelFramework = ModelFramework.YOLO
 
 
 class PseudoLabelRecord(BaseModel):

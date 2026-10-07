@@ -256,6 +256,7 @@ def test_new_class_alone_requires_review_but_no_action(tmp_path: Path) -> None:
     )
     assert result.new_classes_detected == ["unknown_defect"]
     assert result.requires_human_review is True
+    # Per spec: new class alone sets requires_human_review without firing any numeric trigger.
     assert result.recommended_action == RecommendedAction.NO_ACTION
     assert result.status == MonitoringStatus.ALERTS_TRIGGERED
 

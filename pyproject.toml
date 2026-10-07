@@ -55,6 +55,14 @@ web = [
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
 ]
+otel = [
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+]
+auth = [
+    "python-jose[cryptography]>=3.3",
+    "httpx>=0.24",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -69,6 +77,7 @@ select = ["E", "F", "I", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
     # Azure ML SDK uses marshmallow internals that emit version-migration
     # warnings on every import — not actionable, so suppress them globally.

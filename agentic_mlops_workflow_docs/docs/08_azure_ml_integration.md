@@ -1,3 +1,7 @@
+> **Living Spec** — This document is kept in sync with the implementation.
+> Authoritative sources: [`CLAUDE.md`](../../CLAUDE.md) and [`docs/13_backlog.md`](../docs/13_backlog.md).
+> When implementation diverges from this spec, `CLAUDE.md` is the ground truth.
+
 # Azure ML Integration
 
 ## Роль Azure ML

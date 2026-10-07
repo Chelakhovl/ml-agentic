@@ -45,6 +45,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from agentic_mlops.contracts.approvals import ApprovalAction
@@ -111,10 +112,14 @@ def _base_input(tmp_path: Path, **overrides: object) -> OrchestratorInput:
 
 
 def test_unknown_step_fails_immediately(tmp_path: Path) -> None:
-    inp = _base_input(tmp_path, steps=["not_a_real_step"])
-    result = OrchestratorWorkflow().run(inp)
-    assert result.status == OrchestratorStatus.FAILED
-    assert "Unknown step" in result.message
+    # Since the Pydantic @field_validator on OrchestratorInput.steps catches invalid step
+    # names at model-construction time, OrchestratorInput.model_validate() raises a
+    # ValidationError before the workflow can even run — which is stricter and earlier
+    # than the previous runtime check.
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    with pytest.raises(ValidationError, match="not_a_real_step"):
+        _base_input(tmp_path, steps=["not_a_real_step"])
 
 
 def test_default_steps_are_the_five_mvp_steps_in_order(tmp_path: Path) -> None:
@@ -678,3 +683,124 @@ def test_dataset_registry_azure_ml_requires_azure_config(tmp_path: Path) -> None
     outcome = wf._step_dataset_versioning(inp, tmp_path / "artifacts", {}, None)
     assert outcome.success is False
     assert "azure_config_path" in outcome.errors[0]
+
+
+# ── 36-40. Schema versioning ─────────────────────────────────────────────────────
+
+
+def test_save_state_stamps_schema_version(tmp_path: Path) -> None:
+    from agentic_mlops.integrations.workflow_state_store import (
+        STATE_SCHEMA_VERSION,
+        WorkflowStateStore,
+    )
+
+    store = WorkflowStateStore(tmp_path / "runs", "wf_sv1")
+    store.save_state({"current_state": "NEW"})
+    raw = json.loads(store.state_path.read_text(encoding="utf-8"))
+    assert raw["schema_version"] == STATE_SCHEMA_VERSION
+
+
+def test_load_state_succeeds_with_current_version(tmp_path: Path) -> None:
+    from agentic_mlops.integrations.workflow_state_store import (
+        STATE_SCHEMA_VERSION,
+        WorkflowStateStore,
+    )
+
+    store = WorkflowStateStore(tmp_path / "runs", "wf_sv2")
+    store.save_state({"current_state": "NEW"})
+    loaded = store.load_state()
+    assert loaded is not None
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+
+
+def test_load_state_raises_for_newer_version(tmp_path: Path) -> None:
+    from agentic_mlops.integrations.workflow_state_store import (
+        STATE_SCHEMA_VERSION,
+        SchemaVersionError,
+        WorkflowStateStore,
+    )
+
+    store = WorkflowStateStore(tmp_path / "runs", "wf_sv3")
+    store.workflow_dir.mkdir(parents=True, exist_ok=True)
+    store.state_path.write_text(
+        json.dumps({"current_state": "NEW", "schema_version": STATE_SCHEMA_VERSION + 99}),
+        encoding="utf-8",
+    )
+    with pytest.raises(SchemaVersionError, match="schema_version"):
+        store.load_state()
+
+
+def test_load_state_accepts_missing_version_with_warning(tmp_path: Path) -> None:
+    """Pre-versioning state files (no schema_version key) load with a warning."""
+    from agentic_mlops.integrations.workflow_state_store import WorkflowStateStore
+
+    store = WorkflowStateStore(tmp_path / "runs", "wf_sv4")
+    store.workflow_dir.mkdir(parents=True, exist_ok=True)
+    store.state_path.write_text(
+        json.dumps({"current_state": "COMPLETED"}),
+        encoding="utf-8",
+    )
+    loaded = store.load_state()
+    assert loaded is not None
+    assert loaded["current_state"] == "COMPLETED"
+
+
+def test_orchestrator_resume_with_pre_versioning_state(tmp_path: Path) -> None:
+    """Orchestrator can --resume a run whose state.json predates schema versioning."""
+    from agentic_mlops.integrations.workflow_state_store import WorkflowStateStore
+
+    inp = _base_input(
+        tmp_path,
+        steps=["dataset_validation", "training", "evaluation", "approval"],
+        approval_action=ApprovalAction.APPROVE_MODEL,
+        force_approve=True,
+    )
+    wf = OrchestratorWorkflow()
+    wf.run(inp)
+
+    # Simulate a state file written before schema versioning was introduced
+    store = WorkflowStateStore(Path(inp.runs_dir), inp.workflow_id)
+    raw = json.loads(store.state_path.read_text(encoding="utf-8"))
+    raw.pop("schema_version", None)
+    store.state_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    resumed = inp.model_copy(update={"resume": True})
+    result = wf.run(resumed)
+    assert result.status == OrchestratorStatus.COMPLETED
+
+
+# ── 36. Tracer is invoked for every step when injected ──────────────────────
+
+
+def test_tracer_spans_created_for_each_step(tmp_path: Path) -> None:
+    """When a recording tracer is injected, one span is created per executed step."""
+    from agentic_mlops.observability.tracing import NoOpTracer, _SpanCtx
+
+    class _RecordingTracer(NoOpTracer):
+        def __init__(self) -> None:
+            self.spans: list[str] = []
+
+        def start_span(self, name, **attrs):
+            from contextlib import contextmanager
+
+            @contextmanager
+            def _ctx():
+                self.spans.append(name)
+                yield _SpanCtx()
+
+            return _ctx()
+
+    tracer = _RecordingTracer()
+    steps = ["dataset_validation", "training", "evaluation", "approval"]
+    inp = _base_input(
+        tmp_path,
+        steps=steps,
+        approval_action=ApprovalAction.APPROVE_MODEL,
+        force_approve=True,
+    )
+    result = OrchestratorWorkflow(tracer=tracer).run(inp)
+    assert result.status == OrchestratorStatus.COMPLETED, result.message
+
+    assert len(tracer.spans) == len(steps)
+    for span_name in tracer.spans:
+        assert span_name.startswith("agent.")

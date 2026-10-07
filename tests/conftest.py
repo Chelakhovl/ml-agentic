@@ -30,6 +30,7 @@ def make_data_yaml(root: Path, class_names: list[str] | None = None) -> Path:
     for i, name in enumerate(class_names):
         content += f"  {i}: {name}\n"
     yaml_path = root / "data.yaml"
+    yaml_path.parent.mkdir(parents=True, exist_ok=True)
     yaml_path.write_text(content, encoding="utf-8")
     return yaml_path
 

@@ -253,6 +253,8 @@ class ModelMonitor:
         if new_classes_detected:
             triggered_alerts.append(f"new classes detected: {', '.join(new_classes_detected)}")
             requires_human_review = True
+            # Per spec: "A newly-seen class alone sets requires_human_review=True without
+            # firing any numeric trigger." Do NOT add to fired_actions here.
 
         recommended_action = fired_actions[0] if fired_actions else RecommendedAction.NO_ACTION
         drift_detected = RecommendedAction.CREATE_RETRAINING_REQUEST in fired_actions

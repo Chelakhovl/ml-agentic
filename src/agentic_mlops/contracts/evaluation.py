@@ -9,7 +9,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field
 
-from .common import ToolResult
+from .common import ModelFramework, ToolResult
 
 
 class EvaluationMode(StrEnum):
@@ -88,6 +88,7 @@ class EvaluationInput(BaseModel):
     training_status: Literal["completed", "failed", "cancelled"] | None = None
     promotion_policy_path: str | None = None
     evaluation_config_path: str | None = None
+    framework: ModelFramework = ModelFramework.YOLO
 
 
 class EvaluationOutput(ToolResult):

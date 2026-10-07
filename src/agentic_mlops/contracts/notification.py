@@ -51,6 +51,12 @@ class NotificationConfig(BaseModel):
     # Without it, only an OpenUri browser-link button is shown.
     teams_signing_secret: str | None = None
 
+    # ── Webhook retry ─────────────────────────────────────────────────────────
+    # Transient errors (network, 5xx) are retried up to this many times with
+    # exponential backoff starting at webhook_retry_delay seconds.
+    webhook_max_retries: int = 3
+    webhook_retry_delay: float = 1.0  # seconds; doubles on each retry
+
     # ── Email (SMTP) ──────────────────────────────────────────────────────────
     # Stdlib-only (smtplib / email.mime) — no extra packages required.
     # Leave smtp_host empty to disable email notifications.

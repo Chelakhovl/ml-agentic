@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 
 from .._shared import (
+    OutputFormat,
     _print_annotation_result,
     _print_data_intake_result,
     _print_dataset_structuring_result,
@@ -26,6 +27,9 @@ def validate_dataset(
     fail_on_warnings: bool = typer.Option(
         False, "--fail-on-warnings", help="Exit code 1 if warnings are found"
     ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
+    ),
 ) -> None:
     """Validate a YOLO dataset and write a quality report."""
     from agentic_mlops.agents.dataset_validation import DatasetValidationAgent  # noqa: PLC0415
@@ -42,7 +46,10 @@ def validate_dataset(
         )
     )
 
-    _print_validation_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_validation_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)
@@ -72,6 +79,9 @@ def data_intake(
     duplicate_ratio_threshold: float = typer.Option(
         0.20, "--duplicate-ratio-threshold", help="Duplicate-file ratio that requires human review"
     ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
+    ),
 ) -> None:
     """Scan a raw image directory and write a dataset_manifest."""
     from agentic_mlops.agents.data_intake import DataIntakeAgent  # noqa: PLC0415
@@ -92,7 +102,10 @@ def data_intake(
         )
     )
 
-    _print_data_intake_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_data_intake_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)
@@ -139,6 +152,9 @@ def structure_dataset(
         None,
         "--output-dir",
         help="Where to save the split report (default: <output-dataset-path>/structuring_out)",
+    ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
     ),
 ) -> None:
     """Structure raw images (+ YOLO/COCO labels) into a split YOLO dataset."""
@@ -187,7 +203,10 @@ def structure_dataset(
         )
     )
 
-    _print_dataset_structuring_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_dataset_structuring_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)
@@ -220,6 +239,9 @@ def pseudo_label(
         "--existing-labels-path",
         help="Directory of existing human labels — images already labeled there are skipped",
     ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
+    ),
 ) -> None:
     """Pre-label images with a YOLO model and route them into confidence buckets."""
     from agentic_mlops.agents.annotation import AnnotationAgent  # noqa: PLC0415
@@ -245,7 +267,10 @@ def pseudo_label(
         )
     )
 
-    _print_annotation_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_annotation_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)
@@ -270,6 +295,9 @@ def label_qa(
         "--review-required-threshold",
         help="Suspicious sample count that flips status from passed to review_required",
     ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
+    ),
 ) -> None:
     """Check label quality on a YOLO dataset and write a suspicious-samples report."""
     from agentic_mlops.agents.label_qa import LabelQAAgent  # noqa: PLC0415
@@ -288,7 +316,10 @@ def label_qa(
         )
     )
 
-    _print_label_qa_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_label_qa_result(result)
 
     if not result.success or result.status == "review_required":
         raise typer.Exit(code=1)
@@ -332,6 +363,9 @@ def version_dataset(
         None,
         "--output-dir",
         help="Where to save the version report (default: <registry-dir>/version_out)",
+    ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
     ),
 ) -> None:
     """Register a structured YOLO dataset as a new version with lineage."""
@@ -382,7 +416,10 @@ def version_dataset(
         )
     )
 
-    _print_dataset_versioning_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_dataset_versioning_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)

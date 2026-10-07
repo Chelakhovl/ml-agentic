@@ -15,19 +15,19 @@ from agentic_mlops.contracts.evaluation import (
 
 
 class PolicyThresholds(BaseModel):
-    map50_min: float = 0.75
-    map50_95_min: float = 0.50
-    precision_min: float = 0.70
-    recall_min: float = 0.70
+    map50_min: float = Field(default=0.75, ge=0.0, le=1.0)
+    map50_95_min: float = Field(default=0.50, ge=0.0, le=1.0)
+    precision_min: float = Field(default=0.70, ge=0.0, le=1.0)
+    recall_min: float = Field(default=0.70, ge=0.0, le=1.0)
 
 
 class PromotionPolicy(BaseModel):
     thresholds: PolicyThresholds = Field(default_factory=PolicyThresholds)
-    critical_class_recall_min: float = 0.65
+    critical_class_recall_min: float = Field(default=0.65, ge=0.0, le=1.0)
     critical_classes: list[str] = Field(default_factory=list)
     per_class_recall_min: dict[str, float] = Field(default_factory=dict)
     require_improvement_over_baseline: bool = False
-    baseline_improvement_min_map50: float = 0.01
+    baseline_improvement_min_map50: float = Field(default=0.01, ge=0.0)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> PromotionPolicy:

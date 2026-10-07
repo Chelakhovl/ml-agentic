@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 
 from .._shared import (
+    OutputFormat,
     _print_deployment_result,
     _print_monitoring_result,
     console,
@@ -91,6 +92,9 @@ def deploy_model(
         None,
         "--output-dir",
         help="Where to save the deployment report (default: <deployment-dir>/deploy_out)",
+    ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
     ),
 ) -> None:
     """Export, smoke-test, and deploy a registered model to staging or production.
@@ -200,7 +204,10 @@ def deploy_model(
         )
     )
 
-    _print_deployment_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_deployment_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)
@@ -246,6 +253,9 @@ def monitor(
         None,
         "--output-dir",
         help="Where to save the monitoring report (default: <predictions-log dir>/monitoring_out)",
+    ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
     ),
 ) -> None:
     """Analyze a predictions log for drift/latency/confidence issues and recommend an action."""
@@ -314,7 +324,10 @@ def monitor(
         )
     )
 
-    _print_monitoring_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_monitoring_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)
@@ -346,6 +359,9 @@ def ingest_hard_samples(
     min_files: int = typer.Option(1, "--min-files"),
     corrupted_ratio_threshold: float = typer.Option(0.05, "--corrupted-ratio-threshold"),
     duplicate_ratio_threshold: float = typer.Option(0.20, "--duplicate-ratio-threshold"),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
+    ),
 ) -> None:
     """Stage hard samples from a monitoring manifest and run data intake over them."""
     from agentic_mlops.agents.hard_sample_ingestion import HardSampleIngestionAgent  # noqa: PLC0415
@@ -373,17 +389,20 @@ def ingest_hard_samples(
         )
     )
 
-    if result.success:
-        console.print(
-            f"[green]Hard sample ingestion complete.[/green] "
-            f"Staged: {result.num_images_found}/{result.num_hard_samples_in_manifest} images. "
-            f"Intake status: {result.intake_status}."
-        )
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
     else:
-        console.print(f"[red]Hard sample ingestion failed:[/red] {result.message}")
+        if result.success:
+            console.print(
+                f"[green]Hard sample ingestion complete.[/green] "
+                f"Staged: {result.num_images_found}/{result.num_hard_samples_in_manifest} images. "
+                f"Intake status: {result.intake_status}."
+            )
+        else:
+            console.print(f"[red]Hard sample ingestion failed:[/red] {result.message}")
 
-    for w in result.warnings:
-        console.print(f"[yellow]  warning:[/yellow] {w}")
+        for w in result.warnings:
+            console.print(f"[yellow]  warning:[/yellow] {w}")
 
     if not result.success:
         raise typer.Exit(code=1)

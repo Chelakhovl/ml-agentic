@@ -15,7 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .approvals import ApprovalAction
 from .common import ToolResult
@@ -81,6 +81,18 @@ class OrchestratorInput(BaseModel):
     # Root for this run's per-step artifact subdirectories. Defaults to
     # <runs_dir>/<workflow_id>/artifacts.
     output_dir: str | None = None
+
+    # ── state backend ────────────────────────────────────────────────────────
+    # "local" (default) — filesystem under runs_dir.
+    # "azure_blob" — Azure Blob Storage container; requires azure_config_path
+    #                and state_blob_container.
+    state_backend: str = "local"
+    # Azure Blob container name for the "azure_blob" backend.
+    state_blob_container: str | None = None
+
+    # Seconds to wait when acquiring the workflow lock before raising
+    # WorkflowLockError (0 = fail immediately if already locked).
+    lock_timeout_seconds: float = 30.0
 
     dry_run: bool = True
     azure_config_path: str | None = None
@@ -174,6 +186,29 @@ class OrchestratorInput(BaseModel):
     # these — see OrchestratorWorkflow._step_deployment).
     azure_model_name: str | None = None
     azure_model_version: int | None = None
+
+    @field_validator("steps")
+    @classmethod
+    def _validate_steps(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        invalid = [s for s in v if s not in PIPELINE_STEPS]
+        if invalid:
+            raise ValueError(
+                f"Unknown pipeline step(s): {invalid!r}. "
+                f"Valid steps: {list(PIPELINE_STEPS)}"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _validate_split_ratios(self) -> OrchestratorInput:
+        total = self.train_ratio + self.val_ratio + self.test_ratio
+        if total == 0.0:
+            raise ValueError(
+                "train_ratio + val_ratio + test_ratio cannot all be 0.0 "
+                "— at least one split must be non-zero."
+            )
+        return self
 
     @classmethod
     def from_yaml(cls, path: str | Path, **overrides: object) -> OrchestratorInput:

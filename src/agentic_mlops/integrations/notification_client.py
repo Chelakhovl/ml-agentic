@@ -111,24 +111,73 @@ class WebhookNotificationClient(NotificationClientBase):
             )
             self._post(self._config.slack_webhook_url, body)
 
+    @staticmethod
+    def _redact_url(url: str) -> str:
+        """Return a redacted form of a webhook URL suitable for logging.
+
+        Teams URLs look like ``https://…/webhook/<guid>/IncomingWebhook/<token1>/<token2>``
+        and Slack URLs look like ``https://hooks.slack.com/services/<T>/<B>/<secret>``.
+        Both embed access tokens in the path, so the full URL must never appear in
+        logs. Only the scheme + host are kept, plus a ``/…`` suffix.
+        """
+        try:
+            from urllib.parse import urlparse  # noqa: PLC0415
+
+            parsed = urlparse(url)
+            return f"{parsed.scheme}://{parsed.netloc}/…"
+        except Exception:  # noqa: BLE001
+            return "<webhook>"
+
     def _post(self, url: str, body: dict) -> None:
-        """HTTP POST *body* as JSON to *url*. Logs on failure, never raises."""
+        """HTTP POST *body* as JSON to *url* with exponential-backoff retries.
+
+        Retries on network errors and 5xx responses. 4xx are not retried (client
+        errors won't recover on retry). Never raises — logs a warning on final failure.
+        """
+        import time  # noqa: PLC0415
+        import urllib.error  # noqa: PLC0415
         import urllib.request  # noqa: PLC0415
 
+        max_retries = self._config.webhook_max_retries
+        delay = self._config.webhook_retry_delay
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
-                status = resp.status
-                if status >= 300:
-                    logger.warning("Webhook POST returned HTTP %s for %s", status, url)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Webhook POST failed (%s): %s", url, exc)
+        safe_url = self._redact_url(url)
+
+        for attempt in range(max_retries + 1):
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+                    status = resp.status
+                    if status < 300:
+                        return
+                    # 5xx: transient — retry; 4xx: permanent — give up now
+                    if status < 500:
+                        logger.warning(
+                            "Webhook POST returned HTTP %s for %s (not retrying)",
+                            status,
+                            safe_url,
+                        )
+                        return
+                    err_msg = f"HTTP {status}"
+            except urllib.error.URLError as exc:
+                err_msg = str(exc)
+            except Exception as exc:  # noqa: BLE001
+                err_msg = str(exc)
+
+            if attempt < max_retries:
+                logger.warning(
+                    "Webhook POST failed (%s, attempt %d/%d): %s — retrying in %.1fs",
+                    safe_url, attempt + 1, max_retries + 1, err_msg, delay,
+                )
+                time.sleep(delay)
+                delay *= 2
+            else:
+                logger.warning("Webhook POST failed (%s): %s", safe_url, err_msg)
 
 
 # ── SMTP email ────────────────────────────────────────────────────────────────

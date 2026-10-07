@@ -1128,9 +1128,8 @@ class TestRegisterModelCLI:
         assert result.exit_code != 0
 
     def test_run_mvp_has_register_flag(self) -> None:
-        result = runner.invoke(app, ["run-mvp", "--help"])
-        # Rich may truncate the long flag name; check a stable prefix
-        assert "--register-approve" in result.output
+        result = runner.invoke(app, ["run-mvp", "--help"], env={"COLUMNS": "200"})
+        assert "register-approved-model" in result.output
         assert "--model-name" in result.output
         assert "--registry-backend" in result.output
         assert "--registry-dir" in result.output

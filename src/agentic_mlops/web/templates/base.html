@@ -40,6 +40,22 @@
       --shadow:   0 1px 4px rgba(0,0,0,.35);
     }
 
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg:       #1c1c1e;
+        --surface:  #2c2c2e;
+        --border:   #3a3a3c;
+        --text:     #f2f2f7;
+        --muted:    #8e8e93;
+        --accent:   #0a84ff;
+        --accent-h: #409cff;
+        --green:    #30d158;
+        --orange:   #ff9f0a;
+        --red:      #ff453a;
+        --shadow:   0 1px 4px rgba(0,0,0,.35);
+      }
+    }
+
     html, body { height: 100%; }
 
     body {
@@ -376,6 +392,40 @@
     .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
     @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
 
+    /* ── Mobile responsive sidebar ── */
+    .hamburger {
+      display: none;
+      position: fixed;
+      top: 12px; left: 12px;
+      z-index: 200;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      width: 38px; height: 38px;
+      align-items: center; justify-content: center;
+      cursor: pointer;
+      font-size: 18px;
+      box-shadow: var(--shadow);
+    }
+    .sidebar-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.4);
+      z-index: 99;
+    }
+    @media (max-width: 768px) {
+      .hamburger { display: flex; }
+      .sidebar {
+        transform: translateX(-100%);
+        transition: transform .25s ease;
+        z-index: 100;
+      }
+      .sidebar.open { transform: translateX(0); }
+      .sidebar-overlay.open { display: block; }
+      .main { margin-left: 0; padding: 20px 16px; }
+    }
+
     /* ── Toggle switch ── */
     .toggle-group { display: flex; align-items: center; gap: 10px; }
     .toggle { position: relative; width: 36px; height: 20px; }
@@ -401,7 +451,9 @@
   </style>
 </head>
 <body>
-  <nav class="sidebar">
+  <button class="hamburger" id="hamburger" aria-label="Open navigation" onclick="toggleSidebar()">☰</button>
+  <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+  <nav class="sidebar" id="sidebar">
     <a href="/" class="sidebar-logo">
       <span class="sidebar-logo-icon">⚙</span>
       MLOps
@@ -454,10 +506,14 @@
   </main>
 
   <script>
-    // Dark mode
+    // Dark mode — respect saved preference; fall back to OS setting
     (function() {
       const saved = localStorage.getItem('theme');
-      if (saved === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+      if (saved) {
+        document.documentElement.setAttribute('data-theme', saved);
+      } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
     })();
     function toggleDark() {
       const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
@@ -470,6 +526,16 @@
       const btn = document.getElementById('darkToggle');
       if (btn && document.documentElement.getAttribute('data-theme') === 'dark') btn.textContent = '☀️';
     });
+
+    // Mobile sidebar
+    function toggleSidebar() {
+      document.getElementById('sidebar').classList.toggle('open');
+      document.getElementById('sidebarOverlay').classList.toggle('open');
+    }
+    function closeSidebar() {
+      document.getElementById('sidebar').classList.remove('open');
+      document.getElementById('sidebarOverlay').classList.remove('open');
+    }
   </script>
   <script>
     // Copy button helper

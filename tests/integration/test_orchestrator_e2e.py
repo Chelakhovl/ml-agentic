@@ -474,3 +474,106 @@ def test_full_11_step_pipeline(tmp_path: Path) -> None:
         assert by_step[step].success is True, f"{step} failed: {by_step[step].errors}"
     for step in ("model_registry", "deployment"):
         assert by_step[step].status == "SKIPPED", f"{step} should be SKIPPED"
+
+# ── 11. H5 reject cascades model_registry + deployment SKIPPED ───────────────
+
+
+def test_h5_reject_model_cascades_skipped(tmp_path: Path) -> None:
+    """REJECT_MODEL at H5 marks model_registry and deployment as SKIPPED; workflow COMPLETED."""
+    inp = _base_input(
+        tmp_path,
+        workflow_id="e2e_h5_reject",
+        steps=_MVP_NO_REGISTRY + ["model_registry", "deployment"],
+        approval_action=ApprovalAction.REJECT_MODEL,
+        model_name="e2e-reject",
+    )
+    result = OrchestratorWorkflow().run(inp)
+    assert result.status == OrchestratorStatus.COMPLETED, result.message
+
+    by_step = {s.step: s for s in result.steps}
+    assert by_step["approval"].success is True
+    for step in ("model_registry", "deployment"):
+        assert by_step[step].status == "SKIPPED", f"{step} should be SKIPPED after H5 rejection"
+
+
+# ── 12. model_decision output written when step is included ──────────────────
+
+
+def test_model_decision_output_written_and_correct(tmp_path: Path) -> None:
+    """model_decision step writes decision_report.json with a non-empty recommendation."""
+    inp = _base_input(
+        tmp_path,
+        workflow_id="e2e_decision",
+        steps=["dataset_validation", "training", "evaluation", "model_decision"],
+    )
+    result = OrchestratorWorkflow().run(inp)
+    assert result.status == OrchestratorStatus.COMPLETED, result.message
+
+    runs_dir = Path(inp.runs_dir)
+    decision_out = (
+        runs_dir / inp.workflow_id / "artifacts" / "model_decision" / "decision_report.json"
+    )
+    assert decision_out.exists(), "decision_report.json not written by orchestrator"
+    data = json.loads(decision_out.read_text(encoding="utf-8"))
+    assert data.get("success") is True
+    assert data.get("decision") is not None
+
+
+# ── 13. state.json contains schema_version after a real run ──────────────────
+
+
+def test_state_json_has_schema_version_after_run(tmp_path: Path) -> None:
+    """OrchestratorWorkflow writes schema_version into state.json on every save."""
+    from agentic_mlops.integrations.workflow_state_store import STATE_SCHEMA_VERSION
+
+    inp = _base_input(
+        tmp_path,
+        workflow_id="e2e_schema",
+        steps=["dataset_validation"],
+    )
+    OrchestratorWorkflow().run(inp)
+
+    state = json.loads(
+        (Path(inp.runs_dir) / inp.workflow_id / "state.json").read_text(encoding="utf-8")
+    )
+    assert state["schema_version"] == STATE_SCHEMA_VERSION
+
+
+# ── 14. Duplicate workflow_id without resume raises an error ─────────────────
+
+
+def test_duplicate_workflow_id_without_resume_fails(tmp_path: Path) -> None:
+    """Re-running a completed workflow without --resume fails with a clear error."""
+    inp = _base_input(
+        tmp_path,
+        workflow_id="e2e_dup",
+        approval_action=ApprovalAction.APPROVE_MODEL,
+        force_approve=True,
+    )
+    wf = OrchestratorWorkflow()
+    first = wf.run(inp)
+    assert first.status == OrchestratorStatus.COMPLETED
+
+    second = wf.run(inp)  # same workflow_id, no resume=True
+    assert second.status == OrchestratorStatus.FAILED
+    assert second.message  # has an explanatory message
+
+
+# ── 15. audit log has workflow_started and workflow_finished events ───────────
+
+
+def test_audit_log_bookends_present(tmp_path: Path) -> None:
+    """audit_log.jsonl starts with workflow_started and ends with workflow_finished."""
+    inp = _base_input(
+        tmp_path,
+        workflow_id="e2e_audit_bk",
+        approval_action=ApprovalAction.APPROVE_MODEL,
+        force_approve=True,
+    )
+    OrchestratorWorkflow().run(inp)
+
+    audit_path = Path(inp.runs_dir) / inp.workflow_id / "audit_log.jsonl"
+    events = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+    event_types = [e["event"] for e in events]
+    assert "workflow_started" in event_types, "expected workflow_started in audit log"
+    assert "workflow_finished" in event_types, "expected workflow_finished in audit log"

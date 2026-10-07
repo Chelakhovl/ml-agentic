@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 
 from .._shared import (
+    OutputFormat,
     _make_artifact_store,
     _print_orchestrator_result,
     _resolve_mlflow,
@@ -40,11 +41,32 @@ def run_workflow(
         ),
     ),
     trigger: str = typer.Option("manual", "--trigger", help="What triggered this run"),
+    lock_timeout_seconds: float = typer.Option(
+        30.0,
+        "--lock-timeout-seconds",
+        help=(
+            "Seconds to wait when acquiring the workflow run lock. "
+            "0 = fail immediately if another process holds the lock."
+        ),
+    ),
+    state_backend: str = typer.Option(
+        "local",
+        "--state-backend",
+        help=(
+            "Where to persist state.json and audit_log.jsonl: "
+            "'local' (default, filesystem) or 'azure_blob' (Azure Blob Storage; "
+            "requires --azure-config in orchestrator.yaml and "
+            "state_blob_container set there or via AZURE_STORAGE_CONNECTION_STRING)."
+        ),
+    ),
     mlflow_config: str = typer.Option(None, "--mlflow-config", help="Path to MLflow config YAML"),
     enable_mlflow: bool = typer.Option(
         False,
         "--enable-mlflow/--disable-mlflow",
         help="Enable MLflow tracking as one parent run across all steps (default: disabled)",
+    ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
     ),
 ) -> None:
     """Run the full, configurable Orchestrator pipeline (any subset of PIPELINE_STEPS).
@@ -68,6 +90,8 @@ def run_workflow(
             resume=resume,
             resume_from_step=resume_from_step or None,
             trigger=trigger,
+            lock_timeout_seconds=lock_timeout_seconds,
+            state_backend=state_backend,
         )
     except Exception as exc:
         console.print(f"[red]Cannot load orchestrator config '{config}': {exc}[/red]")
@@ -82,7 +106,10 @@ def run_workflow(
         artifact_store=artifact_store,
     ).run(inp)
 
-    _print_orchestrator_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_orchestrator_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)
@@ -138,6 +165,46 @@ def serve(
             "environment variable."
         ),
     ),
+    api_key: str = typer.Option(
+        "",
+        "--api-key",
+        envvar="DASHBOARD_API_KEY",
+        help=(
+            "Bearer / X-API-Key token required on every request. "
+            "Supply via Authorization: Bearer <token> or X-API-Key: <token>. "
+            "Also readable from the DASHBOARD_API_KEY environment variable. "
+            "Disabled (no token required) when empty."
+        ),
+    ),
+    oidc_issuer: str = typer.Option(
+        "",
+        "--oidc-issuer",
+        envvar="DASHBOARD_OIDC_ISSUER",
+        help=(
+            "OIDC issuer URL for JWT validation (e.g. "
+            "https://login.microsoftonline.com/<tenant>/v2.0). "
+            "Requires the 'auth' extra (pip install -e '.[auth]') and "
+            "--oidc-client-id. Also readable from DASHBOARD_OIDC_ISSUER."
+        ),
+    ),
+    oidc_client_id: str = typer.Option(
+        "",
+        "--oidc-client-id",
+        envvar="DASHBOARD_OIDC_CLIENT_ID",
+        help=(
+            "Expected 'aud' claim in OIDC JWTs. "
+            "Required when --oidc-issuer is set. "
+            "Also readable from DASHBOARD_OIDC_CLIENT_ID."
+        ),
+    ),
+    require_auth: bool = typer.Option(
+        False,
+        "--require-auth/--no-require-auth",
+        help=(
+            "Fail fast on startup if no auth method is configured. "
+            "Use in production to prevent accidentally running unauthenticated."
+        ),
+    ),
 ) -> None:
     """Start the MLOps web dashboard (requires the 'web' extra: pip install -e '.[web]')."""
     try:
@@ -150,24 +217,40 @@ def serve(
 
     from agentic_mlops.web.app import create_app
 
-    web_app = create_app(
-        runs_dir=runs_dir,
-        registry_dir=registry_dir,
-        datasets_dir=datasets_dir,
-        dashboard_user=user,
-        dashboard_password=password,
-        slack_signing_secret=slack_signing_secret,
-        teams_signing_secret=teams_signing_secret,
-    )
+    try:
+        web_app = create_app(
+            runs_dir=runs_dir,
+            registry_dir=registry_dir,
+            datasets_dir=datasets_dir,
+            dashboard_user=user,
+            dashboard_password=password,
+            slack_signing_secret=slack_signing_secret,
+            teams_signing_secret=teams_signing_secret,
+            api_key=api_key,
+            oidc_issuer=oidc_issuer,
+            oidc_client_id=oidc_client_id,
+            require_auth=require_auth,
+        )
+    except (RuntimeError, ImportError) as exc:
+        console.print(f"[red]Dashboard startup failed: {exc}[/red]")
+        raise typer.Exit(code=1) from None
+
     console.print(f"[bold green]MLOps Dashboard[/bold green]  http://{host}:{port}")
     console.print(f"  Runs dir     : [bold]{runs_dir}[/bold]")
     console.print(f"  Registry dir : [bold]{registry_dir}[/bold]")
     console.print(f"  Datasets dir : [bold]{datasets_dir}[/bold]")
+    _auth_methods = []
     if password:
-        console.print(f"  Auth         : Basic Auth (user: [bold]{user}[/bold])")
+        _auth_methods.append(f"Basic Auth (user: {user})")
+    if api_key:
+        _auth_methods.append("API key")
+    if oidc_issuer and oidc_client_id:
+        _auth_methods.append(f"OIDC ({oidc_issuer})")
+    if _auth_methods:
+        console.print(f"  Auth         : {', '.join(_auth_methods)}")
     else:
         console.print(
-            "  Auth         : [yellow]disabled[/yellow] — set DASHBOARD_PASSWORD to enable"
+            "  Auth         : [yellow]disabled[/yellow] — set DASHBOARD_PASSWORD or DASHBOARD_API_KEY to enable"
         )
     uvicorn.run(web_app, host=host, port=port, reload=reload)
 

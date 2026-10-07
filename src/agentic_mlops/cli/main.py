@@ -53,6 +53,7 @@ app.command("watch")(orchestration.watch_workflow)
 app.command("compare-models")(registry.compare_models)
 
 # Utility commands
+app.command("init")(utils.init)
 app.command("model-decision")(utils.model_decision)
 app.command("doctor")(utils.doctor)
 app.command("status")(utils.status)
@@ -61,7 +62,9 @@ app.command("diff-runs")(utils.diff_runs)
 app.command("prune-runs")(utils.prune_runs)
 app.command("tag-run")(utils.tag_run)
 app.command("lint-config")(utils.lint_config)
+app.command("lint-docs")(utils.lint_docs)
 app.command("cost-report")(utils.cost_report)
+app.command("diff-configs")(utils.diff_configs)
 
 if __name__ == "__main__":
     app()

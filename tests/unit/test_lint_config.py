@@ -74,8 +74,10 @@ class TestStepsValidation:
         """,
         )
         report = ConfigLinter().lint(cfg)
-        assert any(c.name == "steps_valid" and c.status == CheckStatus.ERROR for c in report.checks)
-        assert any("foobar_step" in c.message for c in report.checks)
+        # Unknown steps are rejected by Pydantic's @field_validator before the linter's own
+        # steps_valid check runs, so the error surfaces as a config_parse failure.
+        assert any(c.status == CheckStatus.ERROR for c in report.checks)
+        assert any("foobar_step" in (c.message or "") for c in report.checks)
 
     def test_valid_steps_ok(self, tmp_path):
         cfg = _write(

@@ -36,6 +36,7 @@ from agentic_mlops.integrations.model_registry import (
     ModelRegistryClientBase,
 )
 from agentic_mlops.observability.logging import get_logger
+from agentic_mlops.observability.tracing import BaseTracer, NoOpTracer
 from agentic_mlops.tools.evaluation_runner import AzureMLEvaluationRunner
 from agentic_mlops.tools.pipeline_runner import AzureMLPipelineRunner
 from agentic_mlops.tools.report_writer import ReportWriter
@@ -61,6 +62,7 @@ class MVPWorkflow:
         _approval_factory: Callable[[Path], Any] | None = None,
         _registry_factory: Callable[[Path], Any] | None = None,
         artifact_store: ArtifactStore | None = None,
+        tracer: BaseTracer | None = None,
     ) -> None:
         self.logger = get_logger(self.__class__.__name__)
         # None = use default factory with MLflow injection; non-None = test override
@@ -73,6 +75,12 @@ class MVPWorkflow:
         self._mlflow_config = mlflow_config
         self._report_writer = ReportWriter()
         self._artifact_store: ArtifactStore = artifact_store or NoOpArtifactStore()
+        self._tracer: BaseTracer = tracer if tracer is not None else NoOpTracer()
+
+    def _wire_tracer(self, agent: Any) -> Any:
+        """Inject the workflow-level tracer into any BaseAgent after construction."""
+        agent._tracer = self._tracer
+        return agent
 
     def run(self, inp: MVPWorkflowInput) -> MVPWorkflowOutput:
         output_dir = Path(inp.output_dir)
@@ -127,7 +135,7 @@ class MVPWorkflow:
         val_dir = output_dir / "validation"
         try:
             val_agent = val_factory(val_dir)
-            val_result = val_agent.run(
+            val_result = self._wire_tracer(val_agent).run_traced(
                 DatasetValidationInput(
                     dataset_path=inp.dataset_path,
                     data_yaml_path=inp.data_yaml_path,
@@ -228,7 +236,7 @@ class MVPWorkflow:
                 elif inp.dry_run:
                     cfg.mode = TrainingMode.LOCAL_DRY_RUN
                 train_agent = train_factory(train_dir)
-                train_result = train_agent.run(
+                train_result = self._wire_tracer(train_agent).run_traced(
                     TrainingInput(
                         dataset_path=inp.dataset_path,
                         data_yaml_path=inp.data_yaml_path,
@@ -267,7 +275,7 @@ class MVPWorkflow:
                 else:
                     mode = EvaluationMode.LOCAL_EVAL
                 eval_agent = eval_factory(eval_dir)
-                eval_result = eval_agent.run(
+                eval_result = self._wire_tracer(eval_agent).run_traced(
                     EvaluationInput(
                         dataset_path=inp.dataset_path,
                         data_yaml_path=inp.data_yaml_path,
@@ -302,7 +310,7 @@ class MVPWorkflow:
         try:
             eval_json_path = eval_dir / "evaluation_report.json"
             approval_agent = approval_factory(approval_dir)
-            approval_result = approval_agent.run(
+            approval_result = self._wire_tracer(approval_agent).run_traced(
                 ApprovalInput(
                     evaluation_output_path=str(eval_json_path),
                     approver=inp.approver,
@@ -348,7 +356,7 @@ class MVPWorkflow:
             registry_dir = output_dir / "model_registry"
             try:
                 registry_agent = registry_factory(registry_dir)
-                registry_output = registry_agent.run(
+                registry_output = self._wire_tracer(registry_agent).run_traced(
                     ModelRegistrationInput(
                         model_name=inp.model_name,
                         training_output_path=str(output_dir / "training" / "training_output.json"),

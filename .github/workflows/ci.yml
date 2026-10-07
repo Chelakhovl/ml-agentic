@@ -8,19 +8,23 @@ on:
 jobs:
   # ── Lint & unit tests ────────────────────────────────────────────────────────
   test:
-    name: Lint & Test
+    name: Lint & Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: "pip"
 
       - name: Install dev dependencies
@@ -29,8 +33,8 @@ jobs:
       - name: Lint
         run: ruff check src tests
 
-      - name: Run unit tests
-        run: pytest tests/unit -v --tb=short
+      - name: Run unit tests with coverage
+        run: pytest tests/unit -v --tb=short --cov=agentic_mlops --cov-report=term-missing:skip-covered --cov-fail-under=80
 
   # ── End-to-end fake-mode smoke test ─────────────────────────────────────────
   smoke:

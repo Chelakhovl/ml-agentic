@@ -19,6 +19,14 @@ class ToolResult(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ModelFramework(StrEnum):
+    """ML framework used for training, evaluation, and inference."""
+
+    YOLO = "yolo"
+    TORCHVISION = "torchvision"
+    ONNX_ONLY = "onnx_only"
+
+
 class WorkflowState(StrEnum):
     """MVP subset of the full state machine."""
 

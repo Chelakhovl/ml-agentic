@@ -387,3 +387,35 @@ class TestCompareCli:
             ],
         )
         assert result.exit_code == 0
+
+    def test_cli_json_format(self, tmp_path):
+        import json
+
+        from typer.testing import CliRunner
+
+        from agentic_mlops.cli.main import app
+
+        a = _write_report(tmp_path, "a", map50=0.90)
+        b = _write_report(tmp_path, "b", map50=0.70)
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            [
+                "compare-models",
+                str(a),
+                str(b),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--format",
+                "json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # Logging lines (INFO:/DEBUG:) may prefix the JSON — find the first {
+        json_start = result.output.index("{")
+        data = json.loads(result.output[json_start:])
+        assert "rankings" in data
+        assert "winner" in data
+        assert data["total_models"] == 2
+        names = [r["model_name"] for r in data["rankings"]]
+        assert any("a" in n for n in names)

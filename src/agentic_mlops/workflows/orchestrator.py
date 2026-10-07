@@ -106,8 +106,15 @@ from agentic_mlops.integrations.model_registry import (
     ModelRegistryClientBase,
 )
 from agentic_mlops.integrations.notification_client import NotificationClientBase
-from agentic_mlops.integrations.workflow_state_store import WorkflowStateStore
+from agentic_mlops.integrations.workflow_state_store import (
+    AzureBlobStateBackend,
+    LocalStateBackend,
+    StateBackend,
+    WorkflowLockError,
+    WorkflowStateStore,
+)
 from agentic_mlops.observability.logging import get_logger
+from agentic_mlops.observability.tracing import BaseTracer, NoOpTracer
 from agentic_mlops.tools.baseline_comparator import BaselineComparator
 from agentic_mlops.tools.baseline_resolver import BaselineResolver
 from agentic_mlops.tools.cost_tracker import CostTracker
@@ -169,6 +176,7 @@ class OrchestratorWorkflow:
         cost_tracker: CostTracker | None = None,
         baseline_comparator: BaselineComparator | None = None,
         risk_scorer: ModelRiskScorer | None = None,
+        tracer: BaseTracer | None = None,
     ) -> None:
         self.logger = get_logger(self.__class__.__name__)
         self._report_writer = ReportWriter()
@@ -180,6 +188,7 @@ class OrchestratorWorkflow:
         self._cost_tracker = cost_tracker
         self._baseline_comparator = baseline_comparator
         self._risk_scorer = risk_scorer
+        self._tracer: BaseTracer = tracer if tracer is not None else NoOpTracer()
         # Set fresh at the top of every run() call; read by _mlflow_kwargs()
         # so every _step_* method can inject tracking without threading an
         # extra parameter through all 11 of them.
@@ -193,6 +202,11 @@ class OrchestratorWorkflow:
         if not self._current_mlflow_run_id:
             return {}
         return {"mlflow_client": self._mlflow, "mlflow_run_id": self._current_mlflow_run_id}
+
+    def _wire_tracer(self, agent: Any) -> Any:
+        """Inject the workflow-level tracer into any BaseAgent after construction."""
+        agent._tracer = self._tracer
+        return agent
 
     def _notify(self, event_name: str, payload: dict) -> None:
         if self._notifier is None:
@@ -376,8 +390,62 @@ class OrchestratorWorkflow:
         state["mlflow_run_id"] = run_id
         return run_id
 
+    # -- state-backend factory -------------------------------------------
+
+    @staticmethod
+    def _build_state_backend(inp: OrchestratorInput) -> StateBackend | None:
+        """Return a non-default StateBackend when ``inp.state_backend != 'local'``.
+
+        Returns None to let WorkflowStateStore use its LocalStateBackend default.
+        """
+        if inp.state_backend == "azure_blob":
+            if not inp.state_blob_container:
+                raise ValueError(
+                    "state_backend='azure_blob' requires state_blob_container to be set."
+                )
+            if not inp.azure_config_path:
+                raise ValueError(
+                    "state_backend='azure_blob' requires azure_config_path to be set."
+                )
+            from agentic_mlops.contracts.azure_ml import AzureMLConfig  # noqa: PLC0415
+
+            cfg = AzureMLConfig.from_yaml(inp.azure_config_path)
+            # Derive a connection string from the workspace's default datastore,
+            # or fall back to the AZURE_STORAGE_CONNECTION_STRING env variable.
+            conn_str = (
+                getattr(cfg, "storage_connection_string", None)
+                or __import__("os").environ.get("AZURE_STORAGE_CONNECTION_STRING")
+            )
+            if not conn_str:
+                raise ValueError(
+                    "state_backend='azure_blob' needs either "
+                    "AzureMLConfig.storage_connection_string or the "
+                    "AZURE_STORAGE_CONNECTION_STRING environment variable."
+                )
+            return AzureBlobStateBackend(conn_str, inp.state_blob_container)
+        if inp.state_backend not in ("local", ""):
+            raise ValueError(
+                f"Unknown state_backend '{inp.state_backend}'. "
+                "Valid values: 'local', 'azure_blob'."
+            )
+        return None  # WorkflowStateStore will use LocalStateBackend by default
+
+    # -- main entry point ------------------------------------------------
+
     def run(self, inp: OrchestratorInput) -> OrchestratorOutput:
-        store = WorkflowStateStore(Path(inp.runs_dir), inp.workflow_id)
+        try:
+            backend = self._build_state_backend(inp)
+        except (ValueError, ImportError) as exc:
+            # Build a minimal store (local) just to write the FAILED state.
+            _tmp_store = WorkflowStateStore(Path(inp.runs_dir), inp.workflow_id)
+            return self._immediate_fail(_tmp_store, inp, str(exc))
+
+        store = WorkflowStateStore(
+            Path(inp.runs_dir),
+            inp.workflow_id,
+            lock_timeout_seconds=inp.lock_timeout_seconds,
+            backend=backend,
+        )
         output_root = Path(inp.output_dir) if inp.output_dir else store.workflow_dir / "artifacts"
 
         try:
@@ -385,6 +453,24 @@ class OrchestratorWorkflow:
         except ValueError as exc:
             return self._immediate_fail(store, inp, str(exc))
 
+        try:
+            _lock = store.acquire_lock(inp.lock_timeout_seconds)
+            _lock.__enter__()
+        except WorkflowLockError as exc:
+            return self._immediate_fail(store, inp, str(exc))
+
+        try:
+            return self._run_locked(store, inp, steps, output_root)
+        finally:
+            _lock.__exit__(None, None, None)
+
+    def _run_locked(
+        self,
+        store: WorkflowStateStore,
+        inp: OrchestratorInput,
+        steps: list[str],
+        output_root: Path,
+    ) -> OrchestratorOutput:
         existing_state = store.load_state()
         effective_resume = inp.resume or bool(inp.resume_from_step)
 
@@ -750,7 +836,7 @@ class OrchestratorWorkflow:
                 False, "FAILED", errors=["raw_data_path is required for the data_intake step."]
             )
         agent = DataIntakeAgent(artifacts_dir=output_root / "data_intake", **self._mlflow_kwargs())
-        result = agent.run(
+        result = self._wire_tracer(agent).run_traced(
             DataIntakeInput(
                 raw_data_path=inp.raw_data_path,
                 dataset_name=inp.dataset_name,
@@ -780,7 +866,7 @@ class OrchestratorWorkflow:
             )
         step_dir = output_root / "dataset_structuring"
         agent = DatasetStructuringAgent(artifacts_dir=step_dir, **self._mlflow_kwargs())
-        result = agent.run(
+        result = self._wire_tracer(agent).run_traced(
             DatasetStructuringInput(
                 raw_data_path=inp.raw_data_path,
                 output_dataset_path=str(step_dir / "structured"),
@@ -813,7 +899,7 @@ class OrchestratorWorkflow:
         agent = DatasetValidationAgent(
             artifacts_dir=output_root / "dataset_validation", **self._mlflow_kwargs()
         )
-        result = agent.run(
+        result = self._wire_tracer(agent).run_traced(
             DatasetValidationInput(
                 dataset_path=dataset_path,
                 data_yaml_path=data_yaml_path,
@@ -851,7 +937,7 @@ class OrchestratorWorkflow:
             registry_client=registry_client,
             **self._mlflow_kwargs(),
         )
-        result = agent.run(
+        result = self._wire_tracer(agent).run_traced(
             DatasetVersioningInput(
                 dataset_path=dataset_path,
                 dataset_name=inp.dataset_name,
@@ -903,7 +989,7 @@ class OrchestratorWorkflow:
 
         step_dir = output_root / "training_approval"
         agent = TrainingApprovalAgent(artifacts_dir=step_dir, **self._mlflow_kwargs())
-        result = agent.run(
+        result = self._wire_tracer(agent).run_traced(
             TrainingApprovalInput(
                 dataset_report_path=validation["report_path"],
                 approver=inp.training_approver,
@@ -971,7 +1057,7 @@ class OrchestratorWorkflow:
         agent = TrainingAgent(
             artifacts_dir=step_dir, azure_runner=azure_runner, **self._mlflow_kwargs()
         )
-        result = agent.run(
+        result = self._wire_tracer(agent).run_traced(
             TrainingInput(
                 dataset_path=dataset_path,
                 data_yaml_path=data_yaml_path,
@@ -1129,7 +1215,7 @@ class OrchestratorWorkflow:
         agent = EvaluationAgent(
             artifacts_dir=step_dir, azure_runner=azure_runner, **self._mlflow_kwargs()
         )
-        result = agent.run(
+        result = self._wire_tracer(agent).run_traced(
             EvaluationInput(
                 dataset_path=dataset_path,
                 data_yaml_path=data_yaml_path,
@@ -1174,7 +1260,7 @@ class OrchestratorWorkflow:
         agent = ModelDecisionAgent(
             artifacts_dir=output_root / "model_decision", **self._mlflow_kwargs()
         )
-        result = agent.run(
+        result = self._wire_tracer(agent).run_traced(
             ModelDecisionInput(
                 evaluation_report_path=evaluation["report_path"],
                 promotion_policy_path=inp.promotion_policy_path,
@@ -1214,7 +1300,7 @@ class OrchestratorWorkflow:
 
         step_dir = output_root / "approval"
         agent = HumanApprovalAgent(artifacts_dir=step_dir, **self._mlflow_kwargs())
-        result = agent.run(
+        result = self._wire_tracer(agent).run_traced(
             ApprovalInput(
                 evaluation_output_path=evaluation["report_path"],
                 approver=inp.approver,
@@ -1265,7 +1351,7 @@ class OrchestratorWorkflow:
             registry_client=registry_client,
             **self._mlflow_kwargs(),
         )
-        result = agent.run(
+        result = self._wire_tracer(agent).run_traced(
             ModelRegistrationInput(
                 model_name=inp.model_name,
                 training_output_path=training.get(
@@ -1354,7 +1440,7 @@ class OrchestratorWorkflow:
         agent = DeploymentAgent(
             artifacts_dir=output_root / "deployment", deployer=deployer, **self._mlflow_kwargs()
         )
-        result = agent.run(
+        result = self._wire_tracer(agent).run_traced(
             DeploymentInput(
                 model_path=model_path,
                 model_name=inp.model_name,

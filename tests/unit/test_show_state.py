@@ -356,3 +356,51 @@ class TestShowStateCLI:
         result = runner.invoke(app, ["show-state", "--runs-dir", str(tmp_path)])
         assert result.exit_code == 0
         assert "No workflows" in result.output
+
+
+class TestShowStateJsonFormat:
+    def _runner(self):
+        from typer.testing import CliRunner
+        return CliRunner()
+
+    def _app(self):
+        from agentic_mlops.cli.main import app
+        return app
+
+    def test_list_mode_json(self, tmp_path):
+        import json
+
+        _write_state(tmp_path, "wf_j1", steps=["training"], completed=["training"])
+        result = self._runner().invoke(
+            self._app(), ["show-state", "--runs-dir", str(tmp_path), "--format", "json"]
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert "workflow_ids" in data
+        assert "wf_j1" in data["workflow_ids"]
+
+    def test_detail_mode_json(self, tmp_path):
+        import json
+
+        _write_state(
+            tmp_path, "wf_j2",
+            steps=["dataset_validation", "training"],
+            completed=["dataset_validation"],
+            status="running",
+        )
+        result = self._runner().invoke(
+            self._app(),
+            ["show-state", "wf_j2", "--runs-dir", str(tmp_path), "--format", "json"],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["workflow_id"] == "wf_j2"
+        assert data["status"] == "running"
+        assert any(s["name"] == "dataset_validation" for s in data["step_summaries"])
+
+    def test_missing_workflow_exits_1_in_json_mode(self, tmp_path):
+        result = self._runner().invoke(
+            self._app(),
+            ["show-state", "no_exist", "--runs-dir", str(tmp_path), "--format", "json"],
+        )
+        assert result.exit_code == 1

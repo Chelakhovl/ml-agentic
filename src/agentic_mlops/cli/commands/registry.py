@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-from .._shared import console
+from .._shared import OutputFormat, console
 
 
 def compare_models(
@@ -42,6 +42,9 @@ def compare_models(
         "outputs/comparison",
         "--output-dir",
         help="Where to write comparison_report.json/md",
+    ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
     ),
 ) -> None:
     """Rank multiple trained models by a weighted composite score.
@@ -93,6 +96,14 @@ def compare_models(
 
     agent = ModelComparisonAgent(artifacts_dir=Path(output_dir))
     result = agent.run(inp)
+
+    if format == OutputFormat.json:
+        import json as _json  # noqa: PLC0415
+
+        print(_json.dumps(result.model_dump(), indent=2, default=str))
+        if not result.success:
+            raise typer.Exit(code=1)
+        return
 
     if result.success:
         console.print(f"\n[bold]Model Comparison — {result.total_models} models[/bold]")

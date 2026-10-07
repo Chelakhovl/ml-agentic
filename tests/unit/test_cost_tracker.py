@@ -634,3 +634,35 @@ def test_cost_report_command_skipped_step_not_recorded(tmp_path: Path):
     data = json.loads(out_file.read_text(encoding="utf-8"))
     assert data["total_cost"] == 0.0
     assert data["entries"] == []
+
+
+def test_cost_report_command_json_format(tmp_path: Path):
+    """--format json prints a machine-readable JSON summary to stdout."""
+    from typer.testing import CliRunner
+
+    from agentic_mlops.cli.main import app
+
+    wf_dir = tmp_path / "wf_json_fmt"
+    wf_dir.mkdir()
+    state = {
+        "workflow_id": "wf_json_fmt",
+        "step_outputs": {
+            "training": {
+                "started_at": _ts(0),
+                "completed_at": _ts(3600),
+                "compute_type": "Standard_DS3_v2",
+            },
+        },
+    }
+    (wf_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["cost-report", "wf_json_fmt", "--runs-dir", str(tmp_path), "--format", "json"],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["workflow_id"] == "wf_json_fmt"
+    assert "total_cost" in data
+    assert isinstance(data["entries"], list)

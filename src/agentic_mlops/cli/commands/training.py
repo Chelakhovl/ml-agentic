@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 
 from .._shared import (
+    OutputFormat,
     _make_artifact_store,
     _print_approval_result,
     _print_evaluation_result,
@@ -50,6 +51,9 @@ def train(
         False,
         "--enable-mlflow/--disable-mlflow",
         help="Enable MLflow tracking (default: disabled)",
+    ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
     ),
 ) -> None:
     """Build a training plan (--runner fake) or run real YOLO training (local-yolo / azure-ml)."""
@@ -112,7 +116,10 @@ def train(
         final_status = "FINISHED" if result.success else "FAILED"
         mlflow_client.end_run(run_id, status=final_status)
 
-    _print_training_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_training_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)
@@ -162,6 +169,9 @@ def evaluate(
         False,
         "--enable-mlflow/--disable-mlflow",
         help="Enable MLflow tracking (default: disabled)",
+    ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
     ),
 ) -> None:
     """Evaluate a YOLO model and apply the promotion policy."""
@@ -234,7 +244,10 @@ def evaluate(
         final_status = "FINISHED" if result.success else "FAILED"
         mlflow_client.end_run(run_id, status=final_status)
 
-    _print_evaluation_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_evaluation_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)
@@ -271,6 +284,9 @@ def approve(
     dataset_version: str = typer.Option(
         "unknown", "--dataset-version", help="Dataset version or path"
     ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
+    ),
 ) -> None:
     """Review evaluation output and record a human approval decision."""
     from agentic_mlops.agents.human_approval import HumanApprovalAgent  # noqa: PLC0415
@@ -302,7 +318,10 @@ def approve(
         )
     )
 
-    _print_approval_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_approval_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)
@@ -329,6 +348,9 @@ def approve_training(
         False,
         "--force",
         help="Force approve training on a dataset with warnings, in non-interactive mode.",
+    ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
     ),
 ) -> None:
     """H4 gate: review a dataset validation report and approve/reject starting training."""
@@ -362,7 +384,10 @@ def approve_training(
         )
     )
 
-    _print_training_approval_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_training_approval_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)
@@ -394,6 +419,9 @@ def register_model(
         None,
         "--output-dir",
         help="Where to save registration artifacts (default: <registry_dir>/registration_out)",
+    ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
     ),
 ) -> None:
     """Register an approved YOLO model into the local model registry."""
@@ -436,7 +464,10 @@ def register_model(
         )
     )
 
-    _print_registry_result(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_registry_result(result)
 
     if not result.success:
         raise typer.Exit(code=1)
@@ -514,6 +545,9 @@ def run_mvp(
         "--registry-dir",
         help="Root directory for the local model registry",
     ),
+    format: OutputFormat = typer.Option(
+        OutputFormat.text, "--format", "-f", help="Output format: text or json"
+    ),
 ) -> None:
     """Run the end-to-end MVP workflow: validate -> train -> evaluate -> approve -> register."""
     from agentic_mlops.contracts.approvals import ApprovalAction  # noqa: PLC0415
@@ -568,7 +602,10 @@ def run_mvp(
         )
     )
 
-    _print_mvp_summary(result)
+    if format == OutputFormat.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        _print_mvp_summary(result)
 
     if not result.success:
         raise typer.Exit(code=1)

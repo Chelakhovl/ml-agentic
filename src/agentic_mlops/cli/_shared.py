@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,11 @@ if TYPE_CHECKING:
     from agentic_mlops.integrations.mlflow_client import MLflowTrackingClientBase
 
 console = Console()
+
+
+class OutputFormat(str, enum.Enum):
+    text = "text"
+    json = "json"
 
 
 # ── MLflow helpers ─────────────────────────────────────────────────────────────

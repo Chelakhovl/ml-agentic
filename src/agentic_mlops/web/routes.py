@@ -23,6 +23,19 @@ from . import reader
 
 router = APIRouter()
 
+
+@router.get("/health")
+async def health():
+    """Lightweight liveness probe — returns 200 with no side effects."""
+    return {"status": "ok"}
+
+
+@router.get("/api/me")
+async def me(request: Request):
+    """Return the authenticated actor identity set by the auth middleware."""
+    return {"actor": getattr(request.state, "actor", "anonymous")}
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _STEP_ICONS: dict[str, str] = {
@@ -494,8 +507,12 @@ async def approve_submit(
     # — TrainingApprovalAgent/HumanApprovalAgent themselves write
     # approval_decision.json as their *output* once that happens, so nothing else
     # needs to write it here.
+    # Prefer the explicit form field; fall back to the verified auth identity so
+    # audit_log.jsonl always records who took the action (actor field).
+    actor = getattr(request.state, "actor", "anonymous")
+    effective_approver = approver.strip() or actor or "web-ui"
     overrides: dict[str, Any] = {
-        "training_approver" if gate == "h4" else "approver": (approver.strip() or "web-ui")
+        "training_approver" if gate == "h4" else "approver": effective_approver
     }
     if gate == "h4":
         overrides["training_approval_action"] = action

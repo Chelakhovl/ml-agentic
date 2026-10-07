@@ -406,3 +406,50 @@ def test_cli_run_mvp_dry_run(tmp_path: Path) -> None:
     assert (out_dir / "workflow_summary.json").exists()
     data = json.loads((out_dir / "workflow_summary.json").read_text(encoding="utf-8"))
     assert data["workflow_status"] == "completed"
+
+
+def test_tracer_spans_created_for_each_step(tmp_path: Path) -> None:
+    """When a recording tracer is injected, one span is emitted per executed step."""
+    from contextlib import contextmanager
+
+    from agentic_mlops.observability.tracing import NoOpTracer, _SpanCtx
+
+    class _RecordingTracer(NoOpTracer):
+        def __init__(self) -> None:
+            self.spans: list[str] = []
+
+        def start_span(self, name, **attrs):
+            @contextmanager
+            def _ctx():
+                self.spans.append(name)
+                yield _SpanCtx()
+
+            return _ctx()
+
+    tracer = _RecordingTracer()
+    cfg_path = _make_training_config(tmp_path / "train.yaml")
+    out_dir = tmp_path / "out"
+    workflow = MVPWorkflow(
+        _validation_factory=lambda d: _StubAgent(d, _val_ok()),
+        _training_factory=lambda d: _StubAgent(d, _train_ok()),
+        _evaluation_factory=lambda d: _StubAgent(d, _eval_ok()),
+        _approval_factory=lambda d: _StubAgent(d, _approval_ok()),
+        tracer=tracer,
+    )
+    inp = MVPWorkflowInput(
+        dataset_path=str(tmp_path / "ds"),
+        data_yaml_path=str(tmp_path / "ds" / "data.yaml"),
+        training_config_path=str(cfg_path),
+        output_dir=str(out_dir),
+        interactive_approval=False,
+        approval_action=ApprovalAction.APPROVE_MODEL,
+        approver="TestBot",
+        dry_run=True,
+    )
+    result = workflow.run(inp)
+    assert result.success is True
+
+    # 4 steps: validation, training, evaluation, approval
+    assert len(tracer.spans) == 4
+    for span_name in tracer.spans:
+        assert span_name.startswith("agent.")

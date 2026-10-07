@@ -179,3 +179,54 @@ class TestStatusCommand:
         assert result.exit_code == 0
         # 10 total workflows, but output should show "10 total"
         assert "10 total" in result.output
+
+
+class TestStatusJsonFormat:
+    def _invoke_json(self, tmp_path: Path, extra: list[str] | None = None) -> object:
+        return runner.invoke(
+            app,
+            [
+                "status",
+                "--runs-dir", str(tmp_path / "runs"),
+                "--registry-dir", str(tmp_path / "registry"),
+                "--dataset-registry-dir", str(tmp_path / "dataset_registry"),
+                "--format", "json",
+            ] + (extra or []),
+        )
+
+    def test_json_output_is_valid_json(self, tmp_path):
+        result = self._invoke_json(tmp_path)
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "workflows" in data
+        assert "models" in data
+        assert "datasets" in data
+        assert "monitoring" in data
+
+    def test_json_contains_workflow_data(self, tmp_path):
+        _write_state(tmp_path / "runs", "wf_json", "completed", "COMPLETED")
+        result = self._invoke_json(tmp_path)
+        data = json.loads(result.output)
+        assert data["workflows"]["total"] == 1
+        assert any(w["workflow_id"] == "wf_json" for w in data["workflows"]["recent"])
+
+    def test_json_counts_pending_approval(self, tmp_path):
+        _write_state(tmp_path / "runs", "wf_p", "pending_approval", "MODEL_APPROVAL_REQUIRED",
+                     pending_approval_id="appr_wf_p")
+        result = self._invoke_json(tmp_path)
+        data = json.loads(result.output)
+        assert data["workflows"]["pending_approval"] == 1
+
+    def test_json_counts_models(self, tmp_path):
+        _write_model(tmp_path / "registry", "my-model", version=2, map50=0.88)
+        result = self._invoke_json(tmp_path)
+        data = json.loads(result.output)
+        assert data["models"]["total"] == 1
+
+    def test_json_counts_active_alerts(self, tmp_path):
+        runs = tmp_path / "runs"
+        _write_state(runs, "wf_alert", "completed")
+        _write_monitoring(runs, "wf_alert", "monitoring", recommended_action="model_review")
+        result = self._invoke_json(tmp_path)
+        data = json.loads(result.output)
+        assert data["monitoring"]["active_alerts"] == 1
