@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -23,6 +24,8 @@ from agentic_mlops.integrations.workflow_state_store import (
     WorkflowStateStore,
 )
 
+if TYPE_CHECKING:
+    from agentic_mlops.contracts.model_registry import ModelRegistrationInput
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -287,7 +290,7 @@ class TestListWorkflows:
 
 
 class TestResolveBestWeightsPath:
-    def _inp(self, tmp_path: Path, training_out: Path) -> "ModelRegistrationInput":
+    def _inp(self, tmp_path: Path, training_out: Path) -> ModelRegistrationInput:
         from agentic_mlops.contracts.model_registry import ModelRegistrationInput
         return ModelRegistrationInput(
             model_name="m",
@@ -366,7 +369,7 @@ class _RegistrationHelper:
             json.dumps({"status": "approved", "action": "approve_model"}), encoding="utf-8"
         )
 
-    def input(self, model_name: str = "my-model") -> "ModelRegistrationInput":
+    def input(self, model_name: str = "my-model") -> ModelRegistrationInput:
         from agentic_mlops.contracts.model_registry import ModelRegistrationInput
         return ModelRegistrationInput(
             model_name=model_name,
@@ -444,8 +447,12 @@ class TestLocalModelRegistryClientRegister:
         assert registered_pt.read_bytes() == b"fake model weights"
 
     def test_register_missing_best_pt_returns_failed_output(self, tmp_path: Path):
+        from agentic_mlops.contracts.model_registry import (
+            ModelLineage,
+            ModelRegistrationInput,
+            RegistrationStatus,
+        )
         from agentic_mlops.integrations.model_registry import LocalModelRegistryClient
-        from agentic_mlops.contracts.model_registry import ModelRegistrationInput, ModelLineage, RegistrationStatus
 
         # No best.pt created — registry catches FileNotFoundError and returns failed output
         training_out = tmp_path / "training_output.json"

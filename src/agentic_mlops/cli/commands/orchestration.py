@@ -250,7 +250,8 @@ def serve(
         console.print(f"  Auth         : {', '.join(_auth_methods)}")
     else:
         console.print(
-            "  Auth         : [yellow]disabled[/yellow] — set DASHBOARD_PASSWORD or DASHBOARD_API_KEY to enable"
+            "  Auth         : [yellow]disabled[/yellow]"
+            " — set DASHBOARD_PASSWORD or DASHBOARD_API_KEY to enable"
         )
     uvicorn.run(web_app, host=host, port=port, reload=reload)
 

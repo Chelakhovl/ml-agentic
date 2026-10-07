@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from agentic_mlops.cli.main import app
 from agentic_mlops.contracts.doctor import CheckStatus
-from agentic_mlops.tools.docs_linter import DocsLinter, _LIVING_SPEC_MARKER
-
+from agentic_mlops.tools.docs_linter import _LIVING_SPEC_MARKER, DocsLinter
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -40,7 +38,9 @@ def _make_src_dir(tmp: Path) -> Path:
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     (pkg / "agents" / "__init__.py").parent.mkdir(parents=True, exist_ok=True)
     (pkg / "agents" / "__init__.py").write_text("", encoding="utf-8")
-    (pkg / "agents" / "data_intake.py").write_text("class DataIntakeAgent: pass\n", encoding="utf-8")
+    (pkg / "agents" / "data_intake.py").write_text(
+        "class DataIntakeAgent: pass\n", encoding="utf-8"
+    )
     return tmp / "src"
 
 

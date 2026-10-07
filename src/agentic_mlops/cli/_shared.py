@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 console = Console()
 
 
-class OutputFormat(str, enum.Enum):
+class OutputFormat(enum.StrEnum):
     text = "text"
     json = "json"
 
